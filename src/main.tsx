@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BlockMath, InlineMath } from 'react-katex';
-import { ArrowUp, BookOpen, Check, ChevronRight, Image as ImageIcon, LoaderCircle, Menu, Paperclip, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { ArrowUp, BookOpen, Check, ChevronRight, LoaderCircle, Menu, Paperclip, RotateCcw, ShieldCheck, X } from 'lucide-react';
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
@@ -13,7 +13,6 @@ type ImageInput = { mimeType: string; data: string; name: string; preview: strin
 
 const API_URL = (import.meta.env.VITE_API_URL || 'https://proofwise-api.irtiza-proofwise.workers.dev').replace(/\/$/, '');
 const ACTIVE_PROFILE_KEY = 'math-mastery-anonymous-profile';
-const RECENT_STARTS_KEY = 'math-mastery-recent-starts';
 const profileKey = (id: string) => `math-mastery-progress-${id}`;
 
 function MathText({ text = '' }: { text?: string }) {
@@ -33,13 +32,8 @@ function getProfileId() {
 function loadState(id: string): LearnerState { try { return JSON.parse(localStorage.getItem(profileKey(id)) || '{}'); } catch { return {}; } }
 function saveState(id: string, value: LearnerState) { try { localStorage.setItem(profileKey(id), JSON.stringify(value)); } catch { /* storage may be unavailable in private browsing */ } }
 function cleanTutorText(value = '') { return String(value).replace(/\bProofwise\b/gi, 'Math Mastery').replace(/\bV2\b/gi, ''); }
-function recentProblem(): string {
-  try { const items = JSON.parse(localStorage.getItem(RECENT_STARTS_KEY) || '[]'); return String(items.at(-1) || ''); } catch { return ''; }
-}
-function rememberProblem(text: string) {
-  try { const items = JSON.parse(localStorage.getItem(RECENT_STARTS_KEY) || '[]'); localStorage.setItem(RECENT_STARTS_KEY, JSON.stringify([...items, text.slice(0, 120)].slice(-10))); } catch { /* optional */ }
-}
 function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }
+function correctStreak(history: Attempt[]) { let count = 0; for (let i = history.length - 1; i >= 0 && history[i].isCorrect === true; i--) count++; return count; }
 function imageData(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -68,24 +62,24 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagram, setShowDiagram] = useState(false);
-  const [showSolution, setShowSolution] = useState(false);
 
   useEffect(() => { saveState(profileId, state); }, [profileId, state]);
+  useEffect(() => () => { if (image?.preview) URL.revokeObjectURL(image.preview); }, [image]);
   const history = state.history || [];
   const attempts = history.length;
   const correct = history.filter(item => item.isCorrect).length;
+  const currentStreak = correctStreak(history);
   const active = state.currentQuestion;
-  const isSequence = /cauchy|sequence/i.test(`${state.theorem || ''} ${active?.prompt || ''}`);
   const currentStep = state.mode === 'repetition' ? 0 : stepFor(state.phase);
-  const progressValue = Math.min(100, Math.round((correct / Math.max(attempts, 1)) * 76 + Math.min(attempts, 5) * 4));
+  const progressValue = attempts ? Math.round((correct / attempts) * 100) : 0;
   const repeatedQuestion = useMemo(() => [...history].reverse().find(item => item.isCorrect === false)?.question || history.at(-1)?.question || state.lastQuestion || active, [history, state.lastQuestion, active]);
 
   function createNewLearner() {
     const id = makeId();
     try { localStorage.setItem(ACTIVE_PROFILE_KEY, id); } catch { /* continue in memory */ }
-    setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false); setShowSolution(false);
+    setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false);
   }
-  function chooseNewProblem() { setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); setShowSolution(false); }
+  function chooseNewProblem() { setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); }
   async function callTutor({ start = false, repetition = false, sillyMistake = null as boolean | null } = {}) {
     setBusy(true); setError('');
     const question = start ? null : state.currentQuestion || null;
@@ -136,21 +130,22 @@ function App() {
         diagnosedSkill: cleanTutorText(output.diagnosedSkill || ''),
         difficulty: nextQuestion.difficulty || output.difficulty || state.difficulty || 'standard'
       });
-      if (start) { rememberProblem(recognizedProblem); setProblemText(''); setImage(null); }
-      setChoice(''); setReasoning(''); setShowDiagram(false); setShowSolution(false);
+      if (start) { setProblemText(''); setImage(null); }
+      setChoice(''); setReasoning(''); setShowDiagram(false);
     } catch (e: any) { setError(e?.message || 'Could not reach the tutor. Check your connection and try again.'); }
     finally { setBusy(false); }
   }
   function beginLesson() {
     if (!problemText.trim() && !image) { setError('Paste your problem here or attach a clear image of it.'); return; }
-    setState({}); setChoice(''); setReasoning(''); setShowDiagram(false); setShowSolution(false);
+    if (problemText.trim().length > 12000) { setError('Keep the problem text under 12,000 characters.'); return; }
+    setState({}); setChoice(''); setReasoning(''); setShowDiagram(false);
     void callTutor({ start: true });
   }
   function enterRepetition(target?: Question) {
     const question = target || repeatedQuestion;
     if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
     setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null, phase: 'Repetition' }));
-    setChoice(''); setReasoning(''); setShowDiagram(false); setShowSolution(false); setError('');
+    setChoice(''); setReasoning(''); setShowDiagram(false); setError('');
   }
   async function attachImage(file?: File) {
     if (!file) return;
@@ -159,13 +154,22 @@ function App() {
     try { const data = await imageData(file); setImage({ mimeType: file.type, data, name: file.name, preview: URL.createObjectURL(file) }); setError(''); }
     catch (e: any) { setError(e.message || 'Could not open that image.'); }
   }
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    const pastedImage = Array.from(event.clipboardData.items).find(item => item.type.startsWith('image/'))?.getAsFile();
+    if (pastedImage) { event.preventDefault(); void attachImage(pastedImage); }
+  }
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const droppedImage = Array.from(event.dataTransfer.files).find(file => file.type.startsWith('image/'));
+    if (droppedImage) void attachImage(droppedImage);
+  }
   const answerLabel = (item: Attempt) => item.choice === 'F' ? "I don't know yet" : item.question.options['ABCDE'.indexOf(item.choice)] || item.choice;
 
   return <div className="app">
     <aside className={`sidebar ${mobileMenu ? 'open' : ''}`}>
       <div className="brand"><div className="brandmark"><BookOpen size={21} /></div><div><div className="brandtitle">MATH <span>MASTERY</span></div><div className="brandsub">PERSONAL STUDY SPACE</div></div><button className="mobileClose" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={18} /></button></div>
       <div className="sidegroup"><div className="sidetitle">YOUR LEARNING PATH</div>
-        <div className="pathMeter"><div className="pathMeterTop"><span>Progress</span><strong>{attempts ? `${progressValue}%` : 'Ready'}</strong></div><div className="pathMeterTrack"><span style={{ width: `${attempts ? progressValue : 4}%` }} /></div></div>
+        <div className="pathMeter"><div className="pathMeterTop"><span>{attempts ? 'Answer accuracy' : 'Learning progress'}</span><strong>{attempts ? `${progressValue}%` : 'Ready'}</strong></div><div className="pathMeterTrack"><span style={{ width: `${attempts ? progressValue : 4}%` }} /></div><div className="pathMeterFoot"><span>{correct} correct</span><span>{currentStreak ? `${currentStreak} in a row` : `${attempts} answered`}</span></div></div>
         {[1, 2, 3].map(step => <div className={`phase ${currentStep === step ? 'selected' : ''} ${currentStep > step ? 'completed' : ''}`} key={step}><div className="phase-index">{currentStep > step ? <Check size={14} /> : step}</div><span>Step {step}</span><i /></div>)}
         <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={!active && !history.length} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', phase: prev.phase?.startsWith('Repetition') ? 'Step 2' : prev.phase })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
       </div>
@@ -179,11 +183,12 @@ function App() {
           <div className="welcomeMark"><BookOpen size={24} /></div><div className="eyebrow"><span className="eyedot" /> MATHEMATICS STUDY SPACE</div>
           <h1>What problem are<br className="desktopBreak" /> you working on?</h1>
           <p className="intro">Paste it here or upload a photo. We’ll begin with one question and adjust the pace to your answers.</p>
-          <div className="composer startComposer">
+          <div className="composer startComposer" onPaste={handlePaste} onDragOver={event => event.preventDefault()} onDrop={handleDrop}>
             <textarea aria-label="Math problem" rows={4} placeholder="Paste a theorem, exercise, or proof question…" value={problemText} onChange={e => { setProblemText(e.target.value); setError(''); }} disabled={busy} />
             {image && <div className="imageAttachment"><img src={image.preview} alt="Selected problem" /><span>{image.name}</span><button aria-label="Remove image" onClick={() => { URL.revokeObjectURL(image.preview); setImage(null); }}><X size={16} /></button></div>}
             <div className="composerActions"><label className="attachButton"><Paperclip size={19} /><span>Upload image</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => void attachImage(e.target.files?.[0])} /></label><span className="inputHint">No account needed</span><button className="sendButton" onClick={beginLesson} disabled={busy || (!problemText.trim() && !image)} aria-label="Begin with this problem">{busy ? <LoaderCircle size={19} className="spin" /> : <ArrowUp size={21} />}</button></div>
           </div>
+          <div className="pasteHint"><span>Tip</span> Paste a screenshot with <kbd>⌘ V</kbd> / <kbd>Ctrl V</kbd>, or drag it into the box.</div>
           {error && <div className="error" role="alert">{error}</div>}
           <p className="privacyHint"><ShieldCheck size={15} /> Your progress is saved only in this browser.</p>
         </section>}
