@@ -73,7 +73,7 @@ function SequenceDiagram() {
       {[75,150,225,340,430,520,610,700].map((x, i) => <g key={x}><circle cx={x} cy="139" r="10" fill={x < 285 ? '#9ba4ae' : '#8173d8'} /><text x={x - 4} y="172" fill="#727984" fontSize="13">{i + 1}</text></g>)}
       <circle cx="520" cy="139" r="21" fill="none" stroke="#208f78" strokeWidth="4" /><line x1="520" y1="118" x2="520" y2="87" stroke="#208f78" strokeWidth="3" /><text x="511" y="83" fill="#208f78" fontSize="15" fontWeight="700">x</text>
     </svg>
-    <div className="diagramCaption">Later indices let us use the Cauchy condition; convergence of the subsequence brings one such term close to $x$.</div>
+    <div className="diagramCaption"><MathText text="Later indices let us use the Cauchy condition; convergence of the subsequence brings one such term close to $x$." /></div>
   </div>;
 }
 
