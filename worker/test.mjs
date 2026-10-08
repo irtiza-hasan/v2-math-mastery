@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import handler from './src/index.js';
+const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_MODEL:'gemini-3.5-flash-lite'};
+const originalFetch=globalThis.fetch;
+let calls=0;
+let lastTutorPayload;
+const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'diagnostic'};
+globalThis.fetch=async (_url,opts)=>{
+ calls++;
+ assert.equal(opts.headers['x-goog-api-key'],'fake');
+ const request=JSON.parse(opts.body);
+ lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
+ const hasAnswer=Boolean(lastTutorPayload.learnerAnswer);
+ const result={feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Phase 2: adaptive diagnostic',nextQuestion:question};
+ return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
+};
+const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+try{
+ const blocked=await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env);
+ assert.equal(blocked.status,403);
+ const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
+ assert.equal(start.status,200);
+ const started=await start.json();
+ assert.equal(started.nextQuestion.options.length,5);
+ assert.equal(started.nextQuestion.correctAnswer,'A');
+ assert.equal(started.answerCorrect,null);
+ const wrong=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,answer:'B',reasoning:'I thought only consecutive terms matter.',diagnosticsCount:0}),env);
+ const evaluated=await wrong.json();
+ assert.equal(lastTutorPayload.answerCorrect,false);
+ assert.equal(lastTutorPayload.learnerExplanation,'I thought only consecutive terms matter.');
+ assert.equal(evaluated.answerCorrect,false);
+ assert.equal(evaluated.isCorrect,false,'server answer key must override contradictory model verdict');
+ assert.equal(evaluated.awaitingSillyMistake,true);
+ const retry=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,sillyMistake:true,diagnosticsCount:1}),env);
+ const retried=await retry.json();
+ assert.equal(retried.awaitingSillyMistake,false);
+ assert.equal(retried.diagnosticsCount,1,'a self-report does not add another answer attempt');
+ const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(31_000)}),env);
+ assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
+ const health=await handler.fetch(new Request('https://example.workers.dev/health'),env);
+ assert.equal(health.status,200);
+ console.log('PASS: disallowed origin blocked');
+ console.log('PASS: Gemini structured question generation');
+ console.log('PASS: server-side answer grading overrides contradictory model output');
+ console.log('PASS: optional reasoning and silly-mistake flow reach the tutor');
+ console.log('PASS: request-size cap without Content-Length');
+ console.log('PASS: health endpoint');
+}finally{globalThis.fetch=originalFetch;}
