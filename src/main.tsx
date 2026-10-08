@@ -8,7 +8,7 @@ import './styles.css';
 type Diagram = { type: 'sequence' | 'numberLine' | 'mapping' | 'none'; caption: string; labels?: string[] };
 type Question = { prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
 type Attempt = { question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number };
-type LearnerState = { theorem?: string; phase?: string; currentQuestion?: Question; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number; awaitingSillyMistake?: boolean; feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
+type LearnerState = { theorem?: string; phase?: string; currentQuestion?: Question; pendingQuestion?: Question; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number; awaitingSillyMistake?: boolean; feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
 type ImageInput = { mimeType: string; data: string; name: string; preview: string };
 
 const API_URL = (import.meta.env.VITE_API_URL || 'https://proofwise-api.irtiza-proofwise.workers.dev').replace(/\/$/, '');
@@ -80,12 +80,11 @@ function App() {
     setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false);
   }
   function chooseNewProblem() { setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); }
-  async function callTutor({ start = false, repetition = false, sillyMistake = null as boolean | null } = {}) {
+  async function callTutor({ start = false, repetition = false } = {}) {
     setBusy(true); setError('');
     const question = start ? null : state.currentQuestion || null;
     const answer = start ? null : choice || null;
     const theorem = start ? problemText.trim() : state.theorem || '';
-    const updatedHistory = start ? [] : answer && question ? [...history, { question, choice: answer, reasoning, feedback: state.feedback || '', explanation: state.explanation || '', isCorrect: state.verdict ?? null, time: Date.now() }] : history;
     const body = {
       theorem,
       image: start && image ? { mimeType: image.mimeType, data: image.data } : undefined,
@@ -98,7 +97,6 @@ function App() {
       history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, reasoning: item.reasoning, feedback: item.feedback })),
       diagnosticsCount: start ? 0 : state.diagnosticsCount || 0,
       diagramRequested: Boolean(showDiagram),
-      sillyMistake
     };
     try {
       const response = await fetch(`${API_URL}/tutor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -115,17 +113,21 @@ function App() {
         skill: cleanTutorText(output.nextQuestion.skill || ''),
         diagram: output.nextQuestion.diagram && typeof output.nextQuestion.diagram === 'object' ? output.nextQuestion.diagram : { type: 'none', caption: '' }
       };
+      const responseFeedback = cleanTutorText(output.feedback || '');
+      const responseExplanation = cleanTutorText(output.explanation || '');
+      const updatedHistory = start ? [] : answer && question ? [...history, { question, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: output.answerCorrect ?? null, time: Date.now() }] : history;
       setState({
         theorem: recognizedProblem,
         phase: output.phase || state.phase || 'Step 1',
         currentQuestion: output.awaitingSillyMistake ? question || undefined : nextQuestion,
+        pendingQuestion: output.awaitingSillyMistake ? nextQuestion : undefined,
         lastQuestion: answer && question ? question : state.lastQuestion,
         history: updatedHistory,
         mode: repetition || state.mode === 'repetition' ? 'repetition' : 'guided',
         diagnosticsCount: output.diagnosticsCount ?? state.diagnosticsCount ?? 0,
         awaitingSillyMistake: Boolean(output.awaitingSillyMistake),
-        feedback: cleanTutorText(output.feedback || ''),
-        explanation: cleanTutorText(output.explanation || ''),
+        feedback: responseFeedback,
+        explanation: responseExplanation,
         verdict: answer ? output.answerCorrect : null,
         diagnosedSkill: cleanTutorText(output.diagnosedSkill || ''),
         difficulty: nextQuestion.difficulty || output.difficulty || state.difficulty || 'standard'
@@ -146,6 +148,15 @@ function App() {
     if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
     setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null, phase: 'Repetition' }));
     setChoice(''); setReasoning(''); setShowDiagram(false); setError('');
+  }
+  function retryQuestion() {
+    setState(prev => ({ ...prev, pendingQuestion: undefined, awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null }));
+    setChoice(''); setReasoning(''); setShowDiagram(false);
+  }
+  function continueAfterFeedback() {
+    if (!state.pendingQuestion) return;
+    setState(prev => ({ ...prev, currentQuestion: prev.pendingQuestion, lastQuestion: prev.currentQuestion, pendingQuestion: undefined, awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null }));
+    setChoice(''); setReasoning(''); setShowDiagram(false);
   }
   async function attachImage(file?: File) {
     if (!file) return;
@@ -211,7 +222,7 @@ function App() {
               <label className="reasoningLabel" htmlFor="reason">Optional reasoning</label><textarea id="reason" className="reasonField" rows={2} value={reasoning} onChange={e => setReasoning(e.target.value)} placeholder="Add a thought if you’d like, or leave this blank." disabled={busy} />
               <div className="submitBar"><span>Choose an answer to continue.</span><button className="button primary" disabled={busy || !choice} onClick={() => void callTutor()}>{busy ? 'Checking…' : 'Send answer'} {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
             </div></div>}
-            {state.awaitingSillyMistake && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p>Would you like another try?</p><div className="sillyActions"><button className="button secondary" disabled={busy} onClick={() => void callTutor({ sillyMistake: true })}>Try once more</button><button className="button primary" disabled={busy} onClick={() => void callTutor({ sillyMistake: false })}>Show me what I missed</button></div></div></div>}
+            {state.awaitingSillyMistake && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p>Want to try that question again, or continue?</p><div className="sillyActions"><button className="button secondary" disabled={busy} onClick={retryQuestion}>Try this question again</button><button className="button primary" disabled={busy || !state.pendingQuestion} onClick={continueAfterFeedback}>Continue</button></div></div></div>}
             {error && <div className="error" role="alert">{error}</div>}
           </section>
           <aside className="lessonAside"><div className="statsCard"><div className="statHeading">YOUR PROGRESS</div><div className="statsgrid"><div><span className="bigStat">{attempts}</span><small>Questions answered</small></div><div><span className="bigStat">{correct}</span><small>Correct</small></div></div><div className="statsLine"><span>Accuracy</span><strong>{attempts ? `${Math.round(correct / attempts * 100)}%` : '—'}</strong></div><div className="meter"><span style={{ width: `${attempts ? correct / attempts * 100 : 0}%` }} /></div><button className="historyToggle" onClick={() => setShowHistory(!showHistory)}>{showHistory ? 'Hide question history' : 'Review answered questions'}</button></div>
