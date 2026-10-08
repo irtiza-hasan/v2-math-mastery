@@ -75,7 +75,7 @@ Do not commit .dev.vars, .env, or Wrangler credentials. .gitignore excludes thes
 
 1. Create irtiza-hasan/v2-math-mastery.
 2. Enable Settings → Pages → Build and deployment → GitHub Actions.
-3. Add the GitHub Actions repository variable VITE_API_URL with the Worker base URL (no /tutor suffix).
+3. The production frontend defaults to `https://proofwise-api.irtiza-proofwise.workers.dev`. If you later change the Worker URL, set the GitHub Actions repository variable `VITE_API_URL` to the new Worker base URL (no `/tutor` suffix).
 4. Push to main. .github/workflows/pages.yml builds and publishes automatically.
 5. The project URL will be https://irtiza-hasan.github.io/v2-math-mastery/.
 

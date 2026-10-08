@@ -6,7 +6,7 @@ import 'katex/dist/katex.min.css';
 import './styles.css';
 
 const DEFAULT_THEOREM='Lemma 3.18: Let (x_n) be a Cauchy sequence in a metric space (X,d). If (x_n) has a subsequence (x_{n_k}) converging to x ∈ X, prove that x_n → x.';
-const API_URL=(import.meta.env.VITE_API_URL||'').replace(/\/$/,'');
+const API_URL=(import.meta.env.VITE_API_URL||'https://proofwise-api.irtiza-proofwise.workers.dev').replace(/\/$/,'');
 const STORAGE='proofwise-v2-state-1';
 const phases=[['0','Orientation'],['1','Prerequisites'],['2','Diagnostic'],['3','Mastery training'],['4','Proof reconstruction'],['5','Solution unlock'],['6','Repetition']];
 function MathText({text=''}){const parts=String(text).split(/(\$\$[\s\S]+?\$\$|\$[^$\n]+\$)/g);return <>{parts.map((part,i)=>{try{if(part.startsWith('$$')&&part.endsWith('$$'))return <BlockMath key={i} math={part.slice(2,-2)}/>;if(part.startsWith('$')&&part.endsWith('$'))return <InlineMath key={i} math={part.slice(1,-1)}/>;}catch{}return <React.Fragment key={i}>{part}</React.Fragment>;})}</>}
