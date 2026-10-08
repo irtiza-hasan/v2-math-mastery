@@ -48,6 +48,7 @@ function loadState(id: string): LearnerState {
   try { return JSON.parse(localStorage.getItem(profileKey(id)) || '{}'); } catch { return {}; }
 }
 function saveState(id: string, value: LearnerState) { try { localStorage.setItem(profileKey(id), JSON.stringify(value)); } catch { /* private browsing can disable storage */ } }
+function cleanTutorText(value = '') { return String(value).replace(/\bProofwise\b/gi, 'Math Mastery').replace(/\bV2\b/gi, ''); }
 function nextStarterId(current?: string) {
   try {
     const recent: string[] = JSON.parse(localStorage.getItem(RECENT_STARTS_KEY) || '[]');
@@ -140,18 +141,19 @@ function App() {
       if (!response.ok) throw new Error(output.error || `Tutor request failed (${response.status}).`);
       if (!output.nextQuestion || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5) throw new Error('The tutor returned an incomplete question. Please try again.');
       const updatedHistory = start ? [] : answer && question ? [...history, { prompt: question.prompt, question, choice: answer, reasoning: reasoningOpen ? reasoning : '', feedback: output.feedback || '', isCorrect: output.answerCorrect, skill: question.skill, time: Date.now() }] : history;
+      const nextQuestion: Question = { ...output.nextQuestion, prompt: cleanTutorText(output.nextQuestion.prompt), options: output.nextQuestion.options.map((item: string) => cleanTutorText(item)), skill: cleanTutorText(output.nextQuestion.skill || '') };
       setState({
         theorem: problem,
         problemId: selectedProblem,
         phase: output.phase || state.phase || 'Step 1',
-        currentQuestion: output.awaitingSillyMistake ? question || undefined : output.nextQuestion,
+        currentQuestion: output.awaitingSillyMistake ? question || undefined : nextQuestion,
         lastQuestion: answer && question ? question : state.lastQuestion,
         history: updatedHistory,
         mode: repetition || state.mode === 'repetition' ? 'repetition' : 'guided',
         diagnosticsCount: output.diagnosticsCount ?? state.diagnosticsCount ?? 0,
         awaitingSillyMistake: Boolean(output.awaitingSillyMistake),
-        feedback: output.feedback || '',
-        explanation: output.explanation || '',
+        feedback: cleanTutorText(output.feedback || ''),
+        explanation: cleanTutorText(output.explanation || ''),
         verdict: answer ? output.answerCorrect : null,
         diagnosedSkill: output.diagnosedSkill || '',
         orientation: { comfort: difficulty, graphs: graphPreference }

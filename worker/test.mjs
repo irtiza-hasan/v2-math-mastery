@@ -9,9 +9,10 @@ globalThis.fetch=async (_url,opts)=>{
  calls++;
  assert.equal(opts.headers['x-goog-api-key'],'fake');
  const request=JSON.parse(opts.body);
+ assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
  const hasAnswer=Boolean(lastTutorPayload.learnerAnswer);
- const result={feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Phase 2: adaptive diagnostic',nextQuestion:question};
+ const result={feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',nextQuestion:question};
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -31,6 +32,7 @@ try{
  assert.equal(lastTutorPayload.learnerExplanation,'I thought only consecutive terms matter.');
  assert.equal(evaluated.answerCorrect,false);
  assert.equal(evaluated.isCorrect,false,'server answer key must override contradictory model verdict');
+ assert.equal(evaluated.phase,'Step 2','the tutor may advance when performance supports it');
  assert.equal(evaluated.awaitingSillyMistake,true);
  const retry=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,sillyMistake:true,diagnosticsCount:1}),env);
  const retried=await retry.json();

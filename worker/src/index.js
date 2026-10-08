@@ -51,9 +51,6 @@ export default {async fetch(request,env){
   const parsed=JSON.parse(output);if(!validQuestion(parsed.nextQuestion)||parsed.uniqueCorrectChoice!==true||typeof parsed.correctAnswerRationale!=='string'||parsed.correctAnswerRationale.length<8)throw new Error('Invalid or unaudited generated question');
   if(!distinctOptions(parsed.nextQuestion))throw new Error('Repeated options');
  const response={feedback:String(parsed.feedback||'').slice(0,2400),explanation:String(parsed.explanation||'').slice(0,2400),isCorrect:answerCorrect===null?null:answerCorrect,answerCorrect,awaitingSillyMistake:Boolean(parsed.awaitingSillyMistake)&&answerCorrect===false&&sillyMistake===null,diagnosedSkill:String(parsed.diagnosedSkill||'').slice(0,100),phase:String(parsed.phase||phase).slice(0,80),diagnosticsCount:diagnosticsCount+(answer?1:0),nextQuestion:sanitizeQuestion(parsed.nextQuestion)};
-  // Keep the ten-question prerequisite diagnosis, but ensure it stays targeted
-  // to the supplied theorem and prerequisites rather than generic drills.
-  if(answer && diagnosticsCount<10)response.phase='Phase 2: adaptive diagnostic';
   return json(response,200,cors);
  }catch(e){return json({error:e.name==='AbortError'?'AI request timed out. Try again.':'AI response could not be processed. Try again.'},502,cors);}finally{clearTimeout(timeout);}
 }};
