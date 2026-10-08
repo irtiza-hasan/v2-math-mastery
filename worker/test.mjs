@@ -18,12 +18,13 @@ const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{me
 try{
  const blocked=await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env);
  assert.equal(blocked.status,403);
- const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
+ const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',difficulty:'challenge'}),env);
  assert.equal(start.status,200);
  const started=await start.json();
  assert.equal(started.nextQuestion.options.length,5);
  assert.equal(started.nextQuestion.correctAnswer,'A');
  assert.equal(started.answerCorrect,null);
+ assert.equal(lastTutorPayload.difficulty,'challenge','selected difficulty must reach Gemini');
  const wrong=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,answer:'B',reasoning:'I thought only consecutive terms matter.',diagnosticsCount:0}),env);
  const evaluated=await wrong.json();
  assert.equal(lastTutorPayload.answerCorrect,false);
