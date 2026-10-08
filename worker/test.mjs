@@ -4,28 +4,36 @@ const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_M
 const originalFetch=globalThis.fetch;
 let calls=0;
 let lastTutorPayload;
-const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'diagnostic'};
+const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
 globalThis.fetch=async (_url,opts)=>{
  calls++;
  assert.equal(opts.headers['x-goog-api-key'],'fake');
  const request=JSON.parse(opts.body);
  assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
+ if(lastTutorPayload.problemText==='') assert.deepEqual(request.contents[0].parts[1].inlineData,{mimeType:'image/png',data:'AQID'});
  const hasAnswer=Boolean(lastTutorPayload.learnerAnswer);
- const result={feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',nextQuestion:question};
+ const result={problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',difficulty:'standard',nextQuestion:question};
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
 try{
  const blocked=await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env);
  assert.equal(blocked.status,403);
- const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',difficulty:'challenge'}),env);
+ const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
  assert.equal(start.status,200);
  const started=await start.json();
  assert.equal(started.nextQuestion.options.length,5);
  assert.equal(started.nextQuestion.correctAnswer,'A');
  assert.equal(started.answerCorrect,null);
- assert.equal(lastTutorPayload.difficulty,'challenge','selected difficulty must reach Gemini');
+ assert.equal(lastTutorPayload.difficulty,'adaptive','pace is inferred from learner performance');
+ const imageStart=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'',image:{mimeType:'image/png',data:'AQID'}}),env);
+ assert.equal(imageStart.status,200);
+ const imageResult=await imageStart.json();
+ assert.equal(imageResult.problem,'Image problem transcription','image text should be transcribed before starting');
+ assert.equal(lastTutorPayload.problemText,'');
+ const badImage=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'',image:{mimeType:'image/svg+xml',data:'PHN2Zy8+'}}),env);
+ assert.equal(badImage.status,400,'unsupported images must be rejected');
  const wrong=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,answer:'B',reasoning:'I thought only consecutive terms matter.',diagnosticsCount:0}),env);
  const evaluated=await wrong.json();
  assert.equal(lastTutorPayload.answerCorrect,false);
@@ -38,7 +46,7 @@ try{
  const retried=await retry.json();
  assert.equal(retried.awaitingSillyMistake,false);
  assert.equal(retried.diagnosticsCount,1,'a self-report does not add another answer attempt');
- const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(31_000)}),env);
+ const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(5_800_001)}),env);
  assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
  const health=await handler.fetch(new Request('https://example.workers.dev/health'),env);
  assert.equal(health.status,200);
@@ -46,6 +54,7 @@ try{
  console.log('PASS: Gemini structured question generation');
  console.log('PASS: server-side answer grading overrides contradictory model output');
  console.log('PASS: optional reasoning and silly-mistake flow reach the tutor');
+ console.log('PASS: image upload is validated and forwarded for transcription');
  console.log('PASS: request-size cap without Content-Length');
  console.log('PASS: health endpoint');
 }finally{globalThis.fetch=originalFetch;}
