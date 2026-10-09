@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import handler from './src/index.js';
+import { parseMath } from '../src/math.ts';
 const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_MODEL:'gemini-3.5-flash-lite'};
 const originalFetch=globalThis.fetch;
 let calls=0;
 let lastTutorPayload;
 let modelPhase='Step 2';
+let malformedOnce=false;
+let requestNumber=0;
 const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
 globalThis.fetch=async (_url,opts)=>{
  calls++;
+ if(malformedOnce){malformedOnce=false;return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{broken json'}]}}]}));}
  assert.equal(opts.headers['x-goog-api-key'],'fake');
  const request=JSON.parse(opts.body);
  assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
@@ -17,7 +21,7 @@ globalThis.fetch=async (_url,opts)=>{
  const result={problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Use the Cauchy estimate in the original proof.'},uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:modelPhase,difficulty:'standard',nextQuestion:question};
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
-const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++requestNumber}`},body:JSON.stringify(body)});
 try{
  const blocked=await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env);
  assert.equal(blocked.status,403);
@@ -41,7 +45,7 @@ try{
  assert.equal(lastTutorPayload.learnerExplanation,'I thought only consecutive terms matter.');
  assert.equal(evaluated.answerCorrect,false);
  assert.equal(evaluated.isCorrect,false,'server answer key must override contradictory model verdict');
- assert.equal(evaluated.phase,'Step 2','the tutor may advance when performance supports it');
+ assert.equal(evaluated.phase,'Step 1','a model cannot move an unready learner out of diagnosis');
  assert.equal('awaitingSillyMistake' in evaluated,false);
  modelPhase='Step 1';
  const cap=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',phase:'Step 1',currentQuestion:question,answer:'A',diagnosticsCount:9,learnerFeedback:{tags:['An example','A hint'],note:'Show how this helps the original proof.'}}),env);
@@ -65,6 +69,22 @@ try{
  assert.equal((await oversizedCount.json()).diagnosticsCount,10);
  const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(5_800_001)}),env);
  assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
+ const steady=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:Array.from({length:4},()=>({isCorrect:true,question:'Diagnostic question'}))}),env);
+ assert.equal((await steady.json()).stage,'learning');
+ const interrupted=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:[{isCorrect:true},{isCorrect:true},{isCorrect:false},{isCorrect:true}]}),env);
+ assert.equal((await interrupted.json()).stage,'diagnostic');
+ const focus=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',focusSkill:'Triangle inequality',diagnosticsCount:10}),env);
+ assert.equal((await focus.json()).stage,'learning');
+ assert.equal(lastTutorPayload.focusSkill,'Triangle inequality');
+ const beforeRetry=calls;malformedOnce=true;
+ const recovered=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
+ assert.equal(recovered.status,200);assert.equal(calls-beforeRetry,2,'invalid model output gets one automatic retry');
+ const latex=parseMath(String.raw`Let \(x_n\) converge. Then \[d(x_n,x)<\varepsilon\]`);
+ assert.equal(latex.filter(part=>part.math!==undefined).length,2);
+ const malformed=parseMath(String.raw`A metric on $2^N. Let us start by testing your foundational understanding of sequences$ now.`);
+ assert.equal(malformed.filter(part=>part.math!==undefined).length,0,'malformed delimiters never italicize prose');
+ assert.equal(malformed.map(part=>part.text).join(''),String.raw`A metric on $2^N. Let us start by testing your foundational understanding of sequences$ now.`);
+ assert.equal(parseMath('$\\notacommand{x}$').some(part=>part.math!==undefined),false);
  const health=await handler.fetch(new Request('https://example.workers.dev/health'),env);
  assert.equal(health.status,200);
  console.log('PASS: disallowed origin blocked');
@@ -74,5 +94,7 @@ try{
  console.log('PASS: hard diagnostic cap, transition plan, and learning-stage counts');
  console.log('PASS: image upload is validated and forwarded for transcription');
  console.log('PASS: request-size cap without Content-Length');
+ console.log('PASS: progression evidence, targeted gap practice, and malformed-response recovery');
+ console.log('PASS: LaTeX delimiters and safe readable fallback');
  console.log('PASS: health endpoint');
 }finally{globalThis.fetch=originalFetch;}
