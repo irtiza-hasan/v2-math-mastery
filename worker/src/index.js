@@ -30,7 +30,7 @@ export default {async fetch(request,env){
  const allowed=env.ALLOWED_ORIGIN||'http://localhost:5173';
  const cors=safeOrigin(origin,allowed)?{'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type'}:{};
  if(request.method==='OPTIONS')return safeOrigin(origin,allowed)?new Response(null,{status:204,headers:cors}):json({error:'Origin not allowed'},403);
- if(new URL(request.url).pathname==='/health')return json({ok:true,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite'});
+ if(new URL(request.url).pathname==='/health')return json({ok:true,revision:'adaptive-input-2',supportsImages:true,maxImageBytes:MAX_IMAGE_BYTES,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite'});
  if(request.method!=='POST'||new URL(request.url).pathname!=='/tutor')return json({error:'Not found'},404,cors);
  if(!safeOrigin(origin,allowed))return json({error:'Origin not allowed'},403);
  if(!env.GEMINI_API_KEY)return json({error:'Server API key not configured'},503,cors);
