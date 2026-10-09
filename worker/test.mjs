@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import handler from './src/index.js';
+import { validModules, moduleProgress, nextModule } from '../src/learning.ts';
 import { parseMath } from '../src/math.ts';
 const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_MODEL:'gemini-3.5-flash-lite'};
 const originalFetch=globalThis.fetch;
@@ -8,8 +9,11 @@ let lastTutorPayload;
 let modelPhase='Step 2';
 let malformedOnce=false;
 let rejectAuditOnce=false;
+let omitTeachingOnce=false;
 let requestNumber=0;
-const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
+const modules=[{id:'cauchy',title:'Cauchy condition',purpose:'Control the distance between late terms.',dependsOn:[]},{id:'triangle',title:'Triangle inequality',purpose:'Join the two estimates in the proof.',dependsOn:['cauchy']}];
+const teaching={title:'Control late terms',concept:'The Cauchy condition controls every pair beyond a common index.',workedExample:'For tolerance $0.1$, choose $N$ so $d(x_n,x_m)<0.1$ whenever both indices exceed $N$.',connection:'In the original proof, one late term is a subsequence term near the limit.'};
+const question={moduleId:'cauchy',prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
 globalThis.fetch=async (_url,opts)=>{
  calls++;
  if(malformedOnce){malformedOnce=false;return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{broken json'}]}}]}));}
@@ -23,7 +27,8 @@ globalThis.fetch=async (_url,opts)=>{
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
  if(lastTutorPayload.problemText==='') assert.deepEqual(request.contents[0].parts[1].inlineData,{mimeType:'image/png',data:'AQID'});
  
- const result={problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Use the Cauchy estimate in the original proof.'},uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:modelPhase,difficulty:'standard',nextQuestion:question};
+ const result={prerequisites:modules,teaching,reasoningSound:true,problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Use the Cauchy estimate in the original proof.'},uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:modelPhase,difficulty:'standard',nextQuestion:{...question,moduleId:lastTutorPayload.selectedModule||'cauchy',skill:modules.find(m=>m.id===lastTutorPayload.selectedModule)?.title||question.skill}};
+ if(omitTeachingOnce){omitTeachingOnce=false;result.teaching={title:'Hello',concept:'',workedExample:'',connection:''};}
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++requestNumber}`},body:JSON.stringify(body)});
@@ -68,7 +73,7 @@ try{
  assert.equal(learned.stage,'learning');
  modelPhase='Step 3';
  const proof=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',currentQuestion:question,answer:'A',diagnosticsCount:10}),env);
- assert.equal((await proof.json()).stage,'proof','targeted learning can advance into proof reconstruction');
+ assert.equal((await proof.json()).stage,'learning','model cannot skip unfinished prerequisite modules');
  modelPhase='Step 2';
  const oversizedCount=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:100}),env);
  assert.equal((await oversizedCount.json()).diagnosticsCount,10);
@@ -81,6 +86,29 @@ try{
  const focus=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',focusSkill:'Triangle inequality',diagnosticsCount:10}),env);
  assert.equal((await focus.json()).stage,'learning');
  assert.equal(lastTutorPayload.focusSkill,'Triangle inequality');
+ const readyProgress=modules.map(m=>({id:m.id,ready:true,streak:5}));
+ const unlocked=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress}),env);
+ assert.equal((await unlocked.json()).stage,'proof','proof opens after module evidence is ready');
+ const moduleLesson=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress,selectedModule:'triangle',lessonStart:true}),env);
+ const lessonResult=await moduleLesson.json();
+ assert.equal(lessonResult.stage,'learning','clicking a ready module still opens teaching');
+ assert.equal(lessonResult.nextQuestion.moduleId,'triangle');
+ assert.deepEqual(lessonResult.prerequisites,modules,'stable dependency map is preserved');
+ assert.deepEqual(lessonResult.teaching,teaching,'explanation and worked example precede the practice question');
+ assert.equal(validModules(modules),true);
+ assert.equal(validModules([{...modules[0],dependsOn:['triangle']},modules[1]]),false,'cycles are rejected');
+ assert.equal(validModules([{...modules[0],dependsOn:['unknown']}]),false,'dangling dependencies are rejected');
+ const evidence=Array.from({length:5},()=>({question:{moduleId:'cauchy'},isCorrect:true}));
+ assert.equal(moduleProgress(modules[0],evidence).ready,true);
+ assert.equal(moduleProgress(modules[1],evidence).status,'unassessed','modules retain independent evidence');
+ assert.equal(nextModule(modules,evidence).id,'triangle');
+ assert.equal(moduleProgress(modules[0],[...evidence,{question:{moduleId:'cauchy'},isCorrect:true,reasoningSound:false}]).ready,false,'incorrect reasoning blocks mastery despite a correct choice');
+ const unchecked=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress,currentQuestion:question,answer:'A',reasoning:'Because all terms are equal.'}),env);
+ assert.equal((await unchecked.json()).stage,'learning','unchecked written reasoning cannot unlock the proof');
+ const beforeTeachingRetry=calls;omitTeachingOnce=true;
+ const repairedLesson=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,selectedModule:'cauchy'}),env);
+ assert.equal(repairedLesson.status,200);
+ assert.equal(calls-beforeTeachingRetry,3,'a bare question without actual teaching is regenerated');
  const beforeRetry=calls;malformedOnce=true;
  const recovered=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
  assert.equal(recovered.status,200);assert.equal(calls-beforeRetry,3,'invalid output is regenerated and independently audited');
@@ -106,5 +134,7 @@ try{
  console.log('PASS: progression evidence, targeted gap practice, and malformed-response recovery');
  console.log('PASS: independent MCQ audit rejects and regenerates ambiguous questions');
  console.log('PASS: LaTeX delimiters and safe readable fallback');
+ assert.equal((await health.json()).revision,'module-teaching-3');
+ console.log('PASS: dependency graph, module teaching, independent topic evidence, and gated proof reconstruction');
  console.log('PASS: health endpoint');
 }finally{globalThis.fetch=originalFetch;}
