@@ -7,6 +7,7 @@ let calls=0;
 let lastTutorPayload;
 let modelPhase='Step 2';
 let malformedOnce=false;
+let rejectAuditOnce=false;
 let requestNumber=0;
 const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
 globalThis.fetch=async (_url,opts)=>{
@@ -15,6 +16,10 @@ globalThis.fetch=async (_url,opts)=>{
  assert.equal(opts.headers['x-goog-api-key'],'fake');
  const request=JSON.parse(opts.body);
  assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
+ if(request.systemInstruction.parts[0].text.startsWith('Independently check')){
+   const valid=!rejectAuditOnce;rejectAuditOnce=false;
+   return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({valid,correctAnswer:'A',rationale:valid?'Only A satisfies the requested estimate.':'Both A and B are upper bounds. Generate distinct valid and invalid choices.'})}]}}]}));
+ }
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
  if(lastTutorPayload.problemText==='') assert.deepEqual(request.contents[0].parts[1].inlineData,{mimeType:'image/png',data:'AQID'});
  
@@ -78,7 +83,11 @@ try{
  assert.equal(lastTutorPayload.focusSkill,'Triangle inequality');
  const beforeRetry=calls;malformedOnce=true;
  const recovered=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
- assert.equal(recovered.status,200);assert.equal(calls-beforeRetry,2,'invalid model output gets one automatic retry');
+ assert.equal(recovered.status,200);assert.equal(calls-beforeRetry,3,'invalid output is regenerated and independently audited');
+ const beforeAuditRetry=calls;rejectAuditOnce=true;
+ const audited=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
+ assert.equal(audited.status,200);assert.equal(calls-beforeAuditRetry,4,'ambiguous questions are regenerated and checked again');
+ assert.match(lastTutorPayload.generationIssue,/Both A and B/);
  const latex=parseMath(String.raw`Let \(x_n\) converge. Then \[d(x_n,x)<\varepsilon\]`);
  assert.equal(latex.filter(part=>part.math!==undefined).length,2);
  const malformed=parseMath(String.raw`A metric on $2^N. Let us start by testing your foundational understanding of sequences$ now.`);
@@ -95,6 +104,7 @@ try{
  console.log('PASS: image upload is validated and forwarded for transcription');
  console.log('PASS: request-size cap without Content-Length');
  console.log('PASS: progression evidence, targeted gap practice, and malformed-response recovery');
+ console.log('PASS: independent MCQ audit rejects and regenerates ambiguous questions');
  console.log('PASS: LaTeX delimiters and safe readable fallback');
  console.log('PASS: health endpoint');
 }finally{globalThis.fetch=originalFetch;}
