@@ -4,6 +4,7 @@ const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_M
 const originalFetch=globalThis.fetch;
 let calls=0;
 let lastTutorPayload;
+let modelPhase='Step 2';
 const question={prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
 globalThis.fetch=async (_url,opts)=>{
  calls++;
@@ -12,8 +13,8 @@ globalThis.fetch=async (_url,opts)=>{
  assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
  if(lastTutorPayload.problemText==='') assert.deepEqual(request.contents[0].parts[1].inlineData,{mimeType:'image/png',data:'AQID'});
- const hasAnswer=Boolean(lastTutorPayload.learnerAnswer);
- const result={problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,awaitingSillyMistake:hasAnswer&&!lastTutorPayload.sillyMistake,uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',difficulty:'standard',nextQuestion:question};
+ 
+ const result={problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Use the Cauchy estimate in the original proof.'},uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:modelPhase,difficulty:'standard',nextQuestion:question};
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -41,11 +42,27 @@ try{
  assert.equal(evaluated.answerCorrect,false);
  assert.equal(evaluated.isCorrect,false,'server answer key must override contradictory model verdict');
  assert.equal(evaluated.phase,'Step 2','the tutor may advance when performance supports it');
- assert.equal(evaluated.awaitingSillyMistake,true);
- const retry=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,sillyMistake:true,diagnosticsCount:1}),env);
- const retried=await retry.json();
- assert.equal(retried.awaitingSillyMistake,false);
- assert.equal(retried.diagnosticsCount,1,'a self-report does not add another answer attempt');
+ assert.equal('awaitingSillyMistake' in evaluated,false);
+ modelPhase='Step 1';
+ const cap=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',phase:'Step 1',currentQuestion:question,answer:'A',diagnosticsCount:9,learnerFeedback:{tags:['An example','A hint'],note:'Show how this helps the original proof.'}}),env);
+ const capped=await cap.json();
+ assert.equal(capped.diagnosticsCount,10);
+ assert.equal(capped.stage,'learning');
+ assert.equal(capped.phase,'Step 2');
+ assert.equal(lastTutorPayload.stage,'learning','the tenth answer must request learning, never an eleventh diagnostic');
+ assert.deepEqual(lastTutorPayload.learnerFeedback.tags,['An example','A hint']);
+ assert.equal(lastTutorPayload.learnerFeedback.note,'Show how this helps the original proof.');
+ assert.ok(capped.learningPlan.nextMove);
+ const learning=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',phase:'Step 2',currentQuestion:question,answer:'A',diagnosticsCount:10}),env);
+ const learned=await learning.json();
+ assert.equal(learned.diagnosticsCount,10,'learning answers never increase diagnostic count');
+ assert.equal(learned.stage,'learning');
+ modelPhase='Step 3';
+ const proof=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',currentQuestion:question,answer:'A',diagnosticsCount:10}),env);
+ assert.equal((await proof.json()).stage,'proof','targeted learning can advance into proof reconstruction');
+ modelPhase='Step 2';
+ const oversizedCount=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:100}),env);
+ assert.equal((await oversizedCount.json()).diagnosticsCount,10);
  const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(5_800_001)}),env);
  assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
  const health=await handler.fetch(new Request('https://example.workers.dev/health'),env);
@@ -53,7 +70,8 @@ try{
  console.log('PASS: disallowed origin blocked');
  console.log('PASS: Gemini structured question generation');
  console.log('PASS: server-side answer grading overrides contradictory model output');
- console.log('PASS: optional reasoning and silly-mistake flow reach the tutor');
+ console.log('PASS: optional reasoning and multi-select learner feedback reach the tutor');
+ console.log('PASS: hard diagnostic cap, transition plan, and learning-stage counts');
  console.log('PASS: image upload is validated and forwarded for transcription');
  console.log('PASS: request-size cap without Content-Length');
  console.log('PASS: health endpoint');
