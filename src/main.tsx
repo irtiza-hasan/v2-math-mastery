@@ -24,7 +24,21 @@ function getProfileId() {
   try { const saved = localStorage.getItem(ACTIVE_PROFILE_KEY); if (saved) return saved; const id = makeId(); localStorage.setItem(ACTIVE_PROFILE_KEY, id); return id; }
   catch { return 'temporary'; }
 }
-function loadState(id: string): LearnerState { try { return JSON.parse(localStorage.getItem(profileKey(id)) || '{}'); } catch { return {}; } }
+function loadState(id: string): LearnerState {
+  try {
+    const saved: LearnerState = JSON.parse(localStorage.getItem(profileKey(id)) || '{}');
+    if (!Array.isArray(saved.history)) saved.history = [];
+    if (!Array.isArray(saved.gaps)) {
+      const gaps = new Map<string, Gap>();
+      for (const item of saved.history) if (item.isCorrect === false) {
+        const skill = item.question.skill || 'Problem reasoning';
+        gaps.set(skill.toLowerCase(), { skill, feedback: item.feedback, explanation: item.explanation });
+      }
+      saved.gaps = [...gaps.values()];
+    }
+    return saved;
+  } catch { return {}; }
+}
 function saveState(id: string, value: LearnerState) { try { localStorage.setItem(profileKey(id), JSON.stringify(value)); } catch { /* storage may be unavailable in private browsing */ } }
 function cleanTutorText(value = '') { return String(value).replace(/\b(?:Proofwise|Math Mastery)\b/gi, 'Virtual Adaptive Teaching Assistant').replace(/\bV2\b/gi, ''); }
 function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }
@@ -91,7 +105,6 @@ function App() {
   useEffect(() => () => { if (image?.preview) URL.revokeObjectURL(image.preview); }, [image]);
   const history = state.history || [];
   const attempts = history.length;
-  const correct = history.filter(item => item.isCorrect).length;
   const currentStreak = correctStreak(history);
   const active = state.currentQuestion;
   const stage = state.mode === 'repetition' ? 'repetition' : state.stage || (Math.min(10, state.diagnosticsCount || 0) >= 10 || stepFor(state.phase) > 1 ? 'learning' : 'diagnostic');
@@ -126,7 +139,7 @@ function App() {
       const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
       const diagnosticCount = start ? 0 : Math.min(10, (state.diagnosticsCount || 0) + (answer && stage === 'diagnostic' ? 1 : 0));
       const completedDiagnosis = diagnosticCount >= 10 || correctStreak(updatedHistory) >= 5;
-      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && stepFor(output.phase) === 3) ? 'proof' : focusSkill || stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
+      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && stepFor(output.phase) === 3) ? 'proof' : stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
       if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
       const gaps: Gap[] = start ? [] : [...(state.gaps || [])];
       if (question && answer && verdict === false) {
@@ -174,8 +187,9 @@ function App() {
       const response = await fetch(`${API_URL}/tutor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       let output: any;
       try { output = await response.json(); } catch { throw new Error(response.status === 413 ? 'The image could not be accepted by the tutor server. Please crop it to the problem. The server may need its latest update deployed.' : `The tutor returned an unreadable response (${response.status}).`); }
+      if (response.status === 413) throw new Error('Image upload is temporarily unavailable. Paste the problem text to continue.');
       if (!response.ok) throw new Error(output.error || `Tutor request failed (${response.status}).`);
-      if (!output.nextQuestion || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5) throw new Error('The tutor returned an incomplete question. Please try again.');
+      if (!output.nextQuestion || typeof output.nextQuestion.prompt !== 'string' || !['A','B','C','D','E'].includes(output.nextQuestion.correctAnswer) || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5 || !output.nextQuestion.options.every((item: any) => typeof item === 'string') || new Set(output.nextQuestion.options.map((item: string) => item.trim().toLowerCase())).size !== 5) throw new Error('The tutor returned an incomplete question. Please try again.');
       if (start && image && !textOnly) {
         setProblemText(cleanTutorText(output.problem || theorem)); setPendingStart(output); setReviewProblem(true);
       } else acceptTutorOutput(output, start, theorem, question, answer, repetition, focusSkill);
@@ -202,11 +216,13 @@ function App() {
     catch (e: any) { setError(e.message || 'Could not open that image.'); } finally { if (task === imageTask.current) setPreparingImage(false); }
   }
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    if (busy || preparingImage) return;
     const pastedImage = Array.from(event.clipboardData.items).find(item => item.type.startsWith('image/'))?.getAsFile();
     if (pastedImage) { event.preventDefault(); void attachImage(pastedImage); }
   }
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    if (busy || preparingImage) return;
     const droppedImage = Array.from(event.dataTransfer.files).find(file => file.type.startsWith('image/'));
     if (droppedImage) void attachImage(droppedImage);
   }
@@ -218,7 +234,7 @@ function App() {
       <div className="sidegroup"><div className="sidetitle">YOUR LEARNING PATH</div>
         <div className="pathMeter"><div className="pathMeterTop"><span>Learning momentum</span></div><div className="pathMeterTrack" role="img" aria-label={momentum}><span style={barStyle} /></div><p className="momentumLabel">{momentum}</p></div>
         {[1, 2, 3].map(step => <div className={`phase ${currentStep === step ? 'selected' : ''} ${currentStep > step ? 'completed' : ''}`} key={step}><div className="phase-index">{currentStep > step ? <Check size={14} /> : step}</div><span>Step {step}</span><i /></div>)}
-        <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={!active && !history.length} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', stage: 'learning', phase: 'Step 2' })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
+        <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={busy || (!active && !history.length)} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', stage: 'learning', phase: 'Step 2' })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
       </div>
       <button className="historyNav" onClick={() => { setShowHistory(!showHistory); setMobileMenu(false); }} disabled={!history.length}>Review your questions</button><div className="sidebarFoot"><ShieldCheck size={17} /><span>Your learning history stays in this browser.</span></div>
     </aside>
@@ -250,12 +266,12 @@ function App() {
             {history.map((item, index) => <React.Fragment key={`${item.time}-${index}`}>
               <div className="assistantMessage pastQuestion"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">QUESTION</div><div className="questionPrompt"><MathText text={item.question.prompt} /></div><details className="pastOptions"><summary>View choices</summary>{item.question.options.map((option, optionIndex) => <p key={optionIndex}><strong>{'ABCDE'[optionIndex]}.</strong> <MathText text={option.replace(/^[A-E][.):]\s*/, '')} /></p>)}</details></div></div>
               <div className="userBubble answerBubble"><span className="bubbleLabel">YOUR ANSWER</span><p><MathText text={answerLabel(item)} /></p>{item.reasoning && <p className="answerReasoning">{item.reasoning}</p>}</div>
-              <div className="assistantMessage"><div className={`assistantMark ${item.isCorrect ? 'markCorrect' : item.isCorrect === false ? 'markReview' : ''}`}>{item.isCorrect ? <Check size={17} /> : <BookOpen size={17} />}</div><div className={`assistantBubble ${item.isCorrect === false ? 'reviewBubble' : item.isCorrect ? 'correctBubble' : ''}`}><div className="messageLabel">{item.isCorrect ? 'CORRECT' : item.isCorrect === false ? 'LET’S REVIEW THIS' : 'TUTOR'}</div><p><MathText text={item.feedback} /></p>{item.explanation && <p className="explanationText"><MathText text={item.explanation} /></p>}<button className="inlineRepeat" onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div></div>
+              <div className="assistantMessage"><div className={`assistantMark ${item.isCorrect ? 'markCorrect' : item.isCorrect === false ? 'markReview' : ''}`}>{item.isCorrect ? <Check size={17} /> : <BookOpen size={17} />}</div><div className={`assistantBubble ${item.isCorrect === false ? 'reviewBubble' : item.isCorrect ? 'correctBubble' : ''}`}><div className="messageLabel">{item.isCorrect ? 'CORRECT' : item.isCorrect === false ? 'LET’S REVIEW THIS' : 'TUTOR'}</div><p><MathText text={item.feedback} /></p>{item.explanation && <p className="explanationText"><MathText text={item.explanation} /></p>}<button className="inlineRepeat" disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div></div>
             </React.Fragment>)}
 
             {attempts > 0 && state.feedback && state.feedback !== history.at(-1)?.feedback && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p><MathText text={state.feedback} /></p><p className="explanationText"><MathText text={state.explanation} /></p></div></div>}
             {<div className="assistantMessage currentTurn" ref={currentTurnRef}><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
-              <div className="questionMeta"><span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'finding your pace'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
+              <div className="questionMeta"><span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'finding your pace'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" disabled={busy} onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
               <div className="questionPrompt"><MathText text={active.prompt} /></div>
               {active.diagram?.type && active.diagram.type !== 'none' && <><button className="visualToggle" onClick={() => setShowDiagram(!showDiagram)}>{showDiagram ? 'Hide visual' : 'Show a visual'} <ChevronRight size={15} className={showDiagram ? 'chevronOpen' : ''} /></button>{showDiagram && <SequenceDiagram diagram={active.diagram} />}</>}
               <div className="options" role="radiogroup" aria-label="Choose one answer">{(active.options || []).map((option, index) => <button key={`${index}-${option}`} className={`option ${choice === 'ABCDE'[index] ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'ABCDE'[index]} onClick={() => setChoice('ABCDE'[index])} disabled={busy}><span className="optionLetter">{'ABCDE'[index]}</span><span className="optionText"><MathText text={option.replace(/^[A-E][.):]\s*/, '')} /></span><span className="optionRadio" /></button>)}<button className={`option unknown ${choice === 'F' ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'F'} onClick={() => setChoice('F')} disabled={busy}><span className="optionLetter">F</span><span className="optionText">I don't know yet</span><span className="optionRadio" /></button></div>
@@ -264,8 +280,8 @@ function App() {
             </div></div>}
             {error && <div className="error" role="alert">{error}</div>}
           </section>
-          {stage !== 'diagnostic' && <aside className="learningPanel" aria-label="Your learning notes"><div className="panelHeading">YOUR LEARNING NOTES</div><h2>Your next steps</h2><p>{state.diagnosisSummary || 'Choose an idea to practise, or continue the conversation.'}</p><div className="gapList">{(state.gaps || []).length ? state.gaps!.map(gap => <div className={`gapCard ${state.selectedFocus === gap.skill ? 'activeGap' : ''}`} key={gap.skill}><button disabled={busy} onClick={() => void callTutor({ focusSkill: gap.skill })}><span>{gap.secure ? 'Revisit' : 'Practise'}</span><strong>{gap.skill}</strong><ChevronRight size={18} /></button><details><summary>Tutor feedback</summary><p><MathText text={gap.feedback} /></p><p><MathText text={gap.explanation} /></p></details></div>) : <button className="gapCard focusButton" disabled={busy} onClick={() => void callTutor({ focusSkill: state.learningPlan?.focus || active.skill || 'Proof structure' })}>Connect the ideas <ChevronRight size={18} /></button>}</div><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help</button><p className="panelFoot">These notes stay with your learning history in this browser.</p></aside>}
-          {showHistory && <div className="historyCard"><strong>Answered questions</strong>{[...history].reverse().map((item, index) => <div className="historyItem" key={`${item.time}-${index}`}><p><MathText text={item.question.prompt} /></p><button onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div>)}</div>}
+          {stage !== 'diagnostic' && <aside className="learningPanel" aria-label="Your learning notes"><div className="panelHeading">YOUR LEARNING NOTES</div><h2>Your next steps</h2><p>{state.diagnosisSummary || 'Choose an idea to practise, or continue the conversation.'}</p><div className="gapList">{(state.gaps || []).length ? state.gaps!.map(gap => <div className={`gapCard ${state.selectedFocus === gap.skill ? 'activeGap' : ''}`} key={gap.skill}><button disabled={busy} onClick={() => void callTutor({ focusSkill: gap.skill })}><span>{gap.secure ? 'Revisit' : 'Practise'}</span><strong>{gap.skill}</strong><ChevronRight size={18} /></button><details><summary>Tutor feedback</summary><p><MathText text={gap.feedback} /></p><p><MathText text={gap.explanation} /></p></details></div>) : <button className="gapCard focusButton" disabled={busy} onClick={() => void callTutor({ focusSkill: state.learningPlan?.focus || active.skill || 'Proof structure' })}>Connect the ideas <ChevronRight size={18} /></button>}</div><details className="diagnosticNotes"><summary>Feedback from your check-in</summary>{history.filter(item => !item.stage || item.stage === 'diagnostic').map((item, index) => <div key={index}><strong>{item.question.skill || 'Problem reasoning'}</strong><p><MathText text={item.feedback} /></p>{item.reasoning && <p>Your reasoning: {item.reasoning}</p>}</div>)}</details><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help</button><p className="panelFoot">These notes stay with your learning history in this browser.</p></aside>}
+          {showHistory && <div className="historyCard"><strong>Answered questions</strong>{[...history].reverse().map((item, index) => <div className="historyItem" key={`${item.time}-${index}`}><p><MathText text={item.question.prompt} /></p><button disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div>)}</div>}
           <footer>Practice stays in this browser. No account is required.</footer>
         </>}
       </div>
