@@ -8,7 +8,7 @@ import './styles.css';
 type Diagram = { type: 'sequence' | 'numberLine' | 'mapping' | 'none'; caption: string; labels?: string[] };
 type Question = { prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
 type Attempt = { question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number };
-type LearnerState = { theorem?: string; phase?: string; currentQuestion?: Question; pendingQuestion?: Question; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number; awaitingSillyMistake?: boolean; feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
+type LearnerState = { theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number;  feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
 type ImageInput = { mimeType: string; data: string; name: string; preview: string };
 
 const API_URL = (import.meta.env.VITE_API_URL || 'https://proofwise-api.irtiza-proofwise.workers.dev').replace(/\/$/, '');
@@ -31,7 +31,7 @@ function getProfileId() {
 }
 function loadState(id: string): LearnerState { try { return JSON.parse(localStorage.getItem(profileKey(id)) || '{}'); } catch { return {}; } }
 function saveState(id: string, value: LearnerState) { try { localStorage.setItem(profileKey(id), JSON.stringify(value)); } catch { /* storage may be unavailable in private browsing */ } }
-function cleanTutorText(value = '') { return String(value).replace(/\bProofwise\b/gi, 'Math Mastery').replace(/\bV2\b/gi, ''); }
+function cleanTutorText(value = '') { return String(value).replace(/\b(?:Proofwise|Math Mastery)\b/gi, 'Virtual Adaptive Teaching Assistant').replace(/\bV2\b/gi, ''); }
 function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }
 function correctStreak(history: Attempt[]) { let count = 0; for (let i = history.length - 1; i >= 0 && history[i].isCorrect === true; i--) count++; return count; }
 function imageData(file: File): Promise<string> {
@@ -62,6 +62,10 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagram, setShowDiagram] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackTags, setFeedbackTags] = useState<string[]>([]);
+  const [feedbackNote, setFeedbackNote] = useState('');
+  const [showLearningPlan, setShowLearningPlan] = useState(false);
 
   useEffect(() => { saveState(profileId, state); }, [profileId, state]);
   useEffect(() => () => { if (image?.preview) URL.revokeObjectURL(image.preview); }, [image]);
@@ -70,16 +74,17 @@ function App() {
   const correct = history.filter(item => item.isCorrect).length;
   const currentStreak = correctStreak(history);
   const active = state.currentQuestion;
-  const currentStep = state.mode === 'repetition' ? 0 : stepFor(state.phase);
+  const stage = state.mode === 'repetition' ? 'repetition' : state.stage || (Math.min(10, state.diagnosticsCount || 0) >= 10 || stepFor(state.phase) > 1 ? 'learning' : 'diagnostic');
+  const currentStep = stage === 'repetition' ? 0 : stage === 'diagnostic' ? 1 : stage === 'proof' ? 3 : 2;
   const progressValue = attempts ? Math.round((correct / attempts) * 100) : 0;
   const repeatedQuestion = useMemo(() => [...history].reverse().find(item => item.isCorrect === false)?.question || history.at(-1)?.question || state.lastQuestion || active, [history, state.lastQuestion, active]);
 
   function createNewLearner() {
     const id = makeId();
     try { localStorage.setItem(ACTIVE_PROFILE_KEY, id); } catch { /* continue in memory */ }
-    setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false);
+    setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false); setFeedbackTags([]); setFeedbackNote(''); setFeedbackOpen(false); setShowLearningPlan(false);
   }
-  function chooseNewProblem() { setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); }
+  function chooseNewProblem() { setFeedbackTags([]); setFeedbackNote(''); setFeedbackOpen(false); setShowLearningPlan(false); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); }
   async function callTutor({ start = false, repetition = false } = {}) {
     setBusy(true); setError('');
     const question = start ? null : state.currentQuestion || null;
@@ -88,14 +93,16 @@ function App() {
     const body = {
       theorem,
       image: start && image ? { mimeType: image.mimeType, data: image.data } : undefined,
-      phase: start ? 'Step 1' : state.phase || 'Step 1',
+      phase: start ? 'Step 1' : currentStep === 1 ? 'Step 1' : currentStep === 3 ? 'Step 3' : 'Step 2',
+      stage: start ? 'diagnostic' : stage,
       mode: repetition ? 'repetition' : state.mode || 'guided',
       difficulty: state.difficulty || 'adaptive',
       currentQuestion: question,
       answer,
       reasoning: answer ? reasoning : '',
       history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, reasoning: item.reasoning, feedback: item.feedback })),
-      diagnosticsCount: start ? 0 : state.diagnosticsCount || 0,
+      diagnosticsCount: start ? 0 : Math.min(10, state.diagnosticsCount || 0),
+      learnerFeedback: start ? { tags: [], note: '' } : { tags: feedbackTags, note: feedbackNote },
       diagramRequested: Boolean(showDiagram),
     };
     try {
@@ -116,16 +123,19 @@ function App() {
       const responseFeedback = cleanTutorText(output.feedback || '');
       const responseExplanation = cleanTutorText(output.explanation || '');
       const updatedHistory = start ? [] : answer && question ? [...history, { question, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: output.answerCorrect ?? null, time: Date.now() }] : history;
+      const diagnosticCount = start ? 0 : Math.min(10, (state.diagnosticsCount || 0) + (answer && stage === 'diagnostic' ? 1 : 0));
+      const nextStage = start ? 'diagnostic' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && stepFor(output.phase) === 3) ? 'proof' : stage === 'learning' || diagnosticCount >= 10 || stepFor(output.phase) > 1 ? 'learning' : 'diagnostic';
+      if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
       setState({
         theorem: recognizedProblem,
-        phase: output.phase || state.phase || 'Step 1',
-        currentQuestion: output.awaitingSillyMistake ? question || undefined : nextQuestion,
-        pendingQuestion: output.awaitingSillyMistake ? nextQuestion : undefined,
+        phase: nextStage === 'diagnostic' ? 'Step 1' : nextStage === 'proof' ? 'Step 3' : 'Step 2',
+        stage: nextStage,
+        learningPlan: output.learningPlan || { focus: cleanTutorText(output.diagnosedSkill || nextQuestion.skill || 'Your problem'), nextMove: 'Work on the idea that needs attention, then reconstruct the proof and revisit it later.' },
+        currentQuestion: nextQuestion,
         lastQuestion: answer && question ? question : state.lastQuestion,
         history: updatedHistory,
         mode: repetition || state.mode === 'repetition' ? 'repetition' : 'guided',
-        diagnosticsCount: output.diagnosticsCount ?? state.diagnosticsCount ?? 0,
-        awaitingSillyMistake: Boolean(output.awaitingSillyMistake),
+        diagnosticsCount: diagnosticCount,
         feedback: responseFeedback,
         explanation: responseExplanation,
         verdict: answer ? output.answerCorrect : null,
@@ -133,7 +143,7 @@ function App() {
         difficulty: nextQuestion.difficulty || output.difficulty || state.difficulty || 'standard'
       });
       if (start) { setProblemText(''); setImage(null); }
-      setChoice(''); setReasoning(''); setShowDiagram(false);
+      setChoice(''); setReasoning(''); setShowDiagram(false); setFeedbackTags([]); setFeedbackNote('');
     } catch (e: any) { setError(e?.message || 'Could not reach the tutor. Check your connection and try again.'); }
     finally { setBusy(false); }
   }
@@ -146,17 +156,8 @@ function App() {
   function enterRepetition(target?: Question) {
     const question = target || repeatedQuestion;
     if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
-    setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null, phase: 'Repetition' }));
+    setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', stage: 'repetition', feedback: '', explanation: '', verdict: null, phase: 'Repetition' }));
     setChoice(''); setReasoning(''); setShowDiagram(false); setError('');
-  }
-  function retryQuestion() {
-    setState(prev => ({ ...prev, pendingQuestion: undefined, awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null }));
-    setChoice(''); setReasoning(''); setShowDiagram(false);
-  }
-  function continueAfterFeedback() {
-    if (!state.pendingQuestion) return;
-    setState(prev => ({ ...prev, currentQuestion: prev.pendingQuestion, lastQuestion: prev.currentQuestion, pendingQuestion: undefined, awaitingSillyMistake: false, feedback: '', explanation: '', verdict: null }));
-    setChoice(''); setReasoning(''); setShowDiagram(false);
   }
   async function attachImage(file?: File) {
     if (!file) return;
@@ -178,11 +179,11 @@ function App() {
 
   return <div className="app">
     <aside className={`sidebar ${mobileMenu ? 'open' : ''}`}>
-      <div className="brand"><div className="brandmark"><BookOpen size={21} /></div><div><div className="brandtitle">MATH <span>MASTERY</span></div><div className="brandsub">PERSONAL STUDY SPACE</div></div><button className="mobileClose" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={18} /></button></div>
+      <div className="brand"><div className="brandmark"><BookOpen size={21} /></div><div><div className="brandtitle">VIRTUAL ADAPTIVE<br /><span>TEACHING ASSISTANT</span></div><div className="brandsub">PERSONAL STUDY SPACE</div></div><button className="mobileClose" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={18} /></button></div>
       <div className="sidegroup"><div className="sidetitle">YOUR LEARNING PATH</div>
         <div className="pathMeter"><div className="pathMeterTop"><span>{attempts ? 'Answer accuracy' : 'Learning progress'}</span><strong>{attempts ? `${progressValue}%` : 'Ready'}</strong></div><div className="pathMeterTrack"><span style={{ width: `${attempts ? progressValue : 4}%` }} /></div><div className="pathMeterFoot"><span>{correct} correct</span><span>{currentStreak ? `${currentStreak} in a row` : `${attempts} answered`}</span></div></div>
         {[1, 2, 3].map(step => <div className={`phase ${currentStep === step ? 'selected' : ''} ${currentStep > step ? 'completed' : ''}`} key={step}><div className="phase-index">{currentStep > step ? <Check size={14} /> : step}</div><span>Step {step}</span><i /></div>)}
-        <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={!active && !history.length} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', phase: prev.phase?.startsWith('Repetition') ? 'Step 2' : prev.phase })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
+        <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={!active && !history.length} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', stage: 'learning', phase: 'Step 2' })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
       </div>
       <div className="sidebarFoot"><ShieldCheck size={17} /><span>Your learning history stays in this browser.</span></div>
     </aside>
@@ -191,7 +192,7 @@ function App() {
       <header className="topbar"><button className="menuButton" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Open menu"><Menu size={21} /></button><div className="crumb">Study space <ChevronRight size={15} /> <span>{state.theorem ? 'Current problem' : 'Start with your problem'}</span></div><div className="topright"><span className="localBadge"><span className="liveDot" /> Anonymous session</span><button className="newLearner" onClick={createNewLearner}>New learner</button></div></header>
       <div className={`content ${active ? 'chatContent' : 'startContent'}`}>
         {!active && !state.theorem && <section className="welcomeChat">
-          <div className="welcomeMark"><BookOpen size={24} /></div><div className="eyebrow"><span className="eyedot" /> MATHEMATICS STUDY SPACE</div>
+          <div className="welcomeMark"><BookOpen size={24} /></div><div className="eyebrow"><span className="eyedot" /> YOUR PERSONAL LEARNING SPACE</div>
           <h1>What problem are<br className="desktopBreak" /> you working on?</h1>
           <p className="intro">Paste it here or upload a photo. We’ll begin with one question and adjust the pace to your answers.</p>
           <div className="composer startComposer" onPaste={handlePaste} onDragOver={event => event.preventDefault()} onDrop={handleDrop}>
@@ -207,6 +208,7 @@ function App() {
         {active && <>
           <div className="activeTop"><div><div className="eyebrow"><span className="eyedot" /> {state.mode === 'repetition' ? 'REPITITION MODE' : `STEP ${currentStep}`}</div><h1 className="activeTitle">Let’s work through it.</h1></div><button className="button secondary changeProblem" onClick={chooseNewProblem}>New problem</button></div>
           <section className="chatThread" aria-label="Tutoring conversation">
+            <div className="learningStatus"><strong>{stage === 'diagnostic' ? `Getting to know you · ${Math.min(10, state.diagnosticsCount || 0)} / 10 answered` : stage === 'repetition' ? 'Revisit and remember' : stage === 'proof' ? 'Put the proof together' : 'Your targeted learning has begun'}</strong><p>{stage === 'diagnostic' ? 'A short check, then we work directly on your problem. Never more than 10 diagnostic questions.' : state.learningPlan?.nextMove || 'Work on the ideas you need, build the proof, then revisit it for retention.'}</p>{stage !== 'diagnostic' && state.learningPlan?.focus && <span>Focus: {state.learningPlan.focus}</span>}</div>
             <div className="userBubble problemBubble"><span className="bubbleLabel">YOUR PROBLEM</span><div><MathText text={state.theorem || ''} /></div></div>
             {state.feedback && attempts === 0 && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">LET’S BEGIN</div><p><MathText text={state.feedback} /></p>{state.explanation && <p className="explanationText"><MathText text={state.explanation} /></p>}</div></div>}
             {history.map((item, index) => <React.Fragment key={`${item.time}-${index}`}>
@@ -214,15 +216,14 @@ function App() {
               <div className="assistantMessage"><div className={`assistantMark ${item.isCorrect ? 'markCorrect' : item.isCorrect === false ? 'markReview' : ''}`}>{item.isCorrect ? <Check size={17} /> : <BookOpen size={17} />}</div><div className={`assistantBubble ${item.isCorrect === false ? 'reviewBubble' : item.isCorrect ? 'correctBubble' : ''}`}><div className="messageLabel">{item.isCorrect ? 'CORRECT' : item.isCorrect === false ? 'LET’S REVIEW THIS' : 'TUTOR'}</div><p><MathText text={item.feedback} /></p>{item.explanation && <p className="explanationText"><MathText text={item.explanation} /></p>}<button className="inlineRepeat" onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div></div>
             </React.Fragment>)}
 
-            {!state.awaitingSillyMistake && <div className="assistantMessage currentTurn"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
+            {<div className="assistantMessage currentTurn"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
               <div className="questionMeta"><span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'finding your pace'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
               <div className="questionPrompt"><MathText text={active.prompt} /></div>
               {active.diagram?.type && active.diagram.type !== 'none' && <><button className="visualToggle" onClick={() => setShowDiagram(!showDiagram)}>{showDiagram ? 'Hide visual' : 'Show a visual'} <ChevronRight size={15} className={showDiagram ? 'chevronOpen' : ''} /></button>{showDiagram && <SequenceDiagram diagram={active.diagram} />}</>}
               <div className="options" role="radiogroup" aria-label="Choose one answer">{(active.options || []).map((option, index) => <button key={`${index}-${option}`} className={`option ${choice === 'ABCDE'[index] ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'ABCDE'[index]} onClick={() => setChoice('ABCDE'[index])} disabled={busy}><span className="optionLetter">{'ABCDE'[index]}</span><span className="optionText"><MathText text={option.replace(/^[A-E][.)]\s*/, '')} /></span><span className="optionRadio" /></button>)}<button className={`option unknown ${choice === 'F' ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'F'} onClick={() => setChoice('F')} disabled={busy}><span className="optionLetter">F</span><span className="optionText">I don't know yet</span><span className="optionRadio" /></button></div>
               <label className="reasoningLabel" htmlFor="reason">Optional reasoning</label><textarea id="reason" className="reasonField" rows={2} value={reasoning} onChange={e => setReasoning(e.target.value)} placeholder="Add a thought if you’d like, or leave this blank." disabled={busy} />
-              <div className="submitBar"><span>Choose an answer to continue.</span><button className="button primary" disabled={busy || !choice} onClick={() => void callTutor()}>{busy ? 'Checking…' : 'Send answer'} {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
+              <div className="submitBar"><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help{feedbackTags.length || feedbackNote ? ' · saved' : ' (optional)'}</button><button className="button primary" disabled={busy || !choice} onClick={() => void callTutor()}>{busy ? 'Checking…' : 'Send answer'} {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
             </div></div>}
-            {state.awaitingSillyMistake && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p>Want to try that question again, or continue?</p><div className="sillyActions"><button className="button secondary" disabled={busy} onClick={retryQuestion}>Try this question again</button><button className="button primary" disabled={busy || !state.pendingQuestion} onClick={continueAfterFeedback}>Continue</button></div></div></div>}
             {error && <div className="error" role="alert">{error}</div>}
           </section>
           <aside className="lessonAside"><div className="statsCard"><div className="statHeading">YOUR PROGRESS</div><div className="statsgrid"><div><span className="bigStat">{attempts}</span><small>Questions answered</small></div><div><span className="bigStat">{correct}</span><small>Correct</small></div></div><div className="statsLine"><span>Accuracy</span><strong>{attempts ? `${Math.round(correct / attempts * 100)}%` : '—'}</strong></div><div className="meter"><span style={{ width: `${attempts ? correct / attempts * 100 : 0}%` }} /></div><button className="historyToggle" onClick={() => setShowHistory(!showHistory)}>{showHistory ? 'Hide question history' : 'Review answered questions'}</button></div>
@@ -233,6 +234,7 @@ function App() {
         </>}
       </div>
     </main>
+    {(feedbackOpen || showLearningPlan) && <div className="dialogBackdrop" onClick={() => { setFeedbackOpen(false); setShowLearningPlan(false); }}><section className="studentDialog" role="dialog" aria-modal="true" aria-label={showLearningPlan ? 'Your learning plan' : 'Tell me what would help'} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Escape') { setFeedbackOpen(false); setShowLearningPlan(false); } if (event.key === 'Tab') { const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button, textarea')); const first = controls[0]; const last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } } }}><button className="dialogClose" aria-label="Close popup" onClick={() => { setFeedbackOpen(false); setShowLearningPlan(false); }}><X size={20} /></button>{showLearningPlan ? <><h2>Let’s start learning.</h2><p>We have enough to begin. Your next questions focus on the ideas you need for this problem.</p><div className="planFocus"><strong>{state.learningPlan?.focus}</strong><p>{state.learningPlan?.nextMove}</p></div><p>Targeted practice → build the proof → revisit and remember.</p><button className="button primary" autoFocus onClick={() => setShowLearningPlan(false)}>Start learning</button></> : <><h2>What would help?</h2><p>Choose any that fit, write a note, or just close this. This is feedback, not a quiz.</p><div className="feedbackChips">{['A simpler explanation', 'An example', 'A useful diagram', 'A hint', 'More challenge', 'I’m ready to move on'].map(tag => <button key={tag} aria-pressed={feedbackTags.includes(tag)} className={feedbackTags.includes(tag) ? 'selected' : ''} onClick={() => setFeedbackTags(prev => prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag])}>{tag}</button>)}</div><textarea aria-label="Feedback note" value={feedbackNote} maxLength={2000} onChange={event => setFeedbackNote(event.target.value)} placeholder="Anything else? (optional)" /><p className="dialogHint">Your feedback will guide the next tutor response.</p><button className="button primary" autoFocus onClick={() => setFeedbackOpen(false)}>Done</button></>}</section></div>}
   </div>;
 }
 
