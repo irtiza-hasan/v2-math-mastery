@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseMath } from './math';
+import { validModules, moduleProgress, nextModule, validLesson, type Module, type Lesson } from './learning';
 import { ArrowUp, BookOpen, Check, ChevronRight, LoaderCircle, Menu, Paperclip, RotateCcw, ShieldCheck, X } from 'lucide-react';
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
 type Diagram = { type: 'sequence' | 'numberLine' | 'mapping' | 'none'; caption: string; labels?: string[] };
-type Question = { prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
-type Attempt = { question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number; stage?: string };
-type LearnerState = { gaps?: Gap[]; selectedFocus?: string; diagnosisSummary?: string; theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number;  feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
+type Question = { moduleId?: string; prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
+type Attempt = { teachingBefore?: Lesson; reasoningSound?: boolean | null; question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number; stage?: string };
+type LearnerState = { modules?: Module[]; teaching?: Lesson; gaps?: Gap[]; selectedFocus?: string; diagnosisSummary?: string; theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number;  feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
 type ImageInput = { mimeType: string; data: string; name: string; preview: string };
 type Gap = { skill: string; feedback: string; explanation: string; secure?: boolean };
 
@@ -28,6 +29,8 @@ function loadState(id: string): LearnerState {
   try {
     const saved: LearnerState = JSON.parse(localStorage.getItem(profileKey(id)) || '{}');
     if (!Array.isArray(saved.history)) saved.history = [];
+    if (!validModules(saved.modules)) saved.modules = [];
+    if (!validLesson(saved.teaching)) saved.teaching = undefined;
     if (!Array.isArray(saved.gaps)) {
       const gaps = new Map<string, Gap>();
       for (const item of saved.history) if (item.isCorrect === false) {
@@ -72,6 +75,9 @@ async function prepareImage(file: File): Promise<File> {
   } finally { URL.revokeObjectURL(source); }
 }
 
+function TeachingCard({ lesson }: { lesson: Lesson }) {
+  return <div className="teachingCard"><span className="messageLabel">UNDERSTAND THE IDEA</span><h3>{lesson.title}</h3><p><MathText text={lesson.concept} /></p><div className="workedExample"><strong>A worked example</strong><p><MathText text={lesson.workedExample} /></p></div><p className="lessonConnection"><strong>Back to your problem</strong><br /><MathText text={lesson.connection} /></p><span className="lessonNext">Now try the question below.</span></div>;
+}
 function SequenceDiagram({ diagram }: { diagram: Diagram }) {
   if (diagram.type === 'none') return null;
   if (diagram.type === 'numberLine') return <div className="visualCard"><div className="visualLine"><span className="visualInterval" /><span className="visualPoint left" /><span className="visualPoint center" /><span className="visualPoint right" /></div><div className="visualLabels"><span>{diagram.labels?.[0] || 'start'}</span><span>{diagram.labels?.[1] || 'middle'}</span><span>{diagram.labels?.[2] || 'target'}</span></div><p>{diagram.caption}</p></div>;
@@ -135,11 +141,13 @@ function App() {
       };
       const responseFeedback = cleanTutorText(output.feedback || '');
       const responseExplanation = cleanTutorText(output.explanation || '');
+      const modules: Module[] = validModules(state.modules) && !start ? state.modules! : validModules(output.prerequisites) ? output.prerequisites : [];
+      const teaching = validLesson(output.teaching) ? output.teaching : undefined;
       const verdict = answer && question ? answer === question.correctAnswer : null;
-      const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
+      const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, teachingBefore: state.teaching, reasoningSound: typeof output.reasoningSound === 'boolean' ? output.reasoningSound : null, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
       const diagnosticCount = start ? 0 : Math.min(10, (state.diagnosticsCount || 0) + (answer && stage === 'diagnostic' ? 1 : 0));
       const completedDiagnosis = diagnosticCount >= 10 || correctStreak(updatedHistory) >= 5;
-      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && stepFor(output.phase) === 3) ? 'proof' : stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
+      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && modules.length > 0 && modules.every(m => moduleProgress(m, updatedHistory).ready)) ? 'proof' : stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
       if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
       const gaps: Gap[] = start ? [] : [...(state.gaps || [])];
       if (question && answer && verdict === false) {
@@ -152,7 +160,7 @@ function App() {
         const evidence = updatedHistory.filter(item => item.question.skill?.toLowerCase() === gap.skill.toLowerCase());
         if (correctStreak(evidence) >= 5) gap.secure = true;
       }
-      setState({ gaps, selectedFocus: focusSkill || state.selectedFocus, diagnosisSummary: stage === 'diagnostic' && nextStage === 'learning' ? (gaps.length ? 'These ideas need a little attention. Choose one to work on, or continue with the guided practice.' : 'Your answers show a good starting point. We’ll connect the ideas and build the full argument.') : state.diagnosisSummary, theorem: recognizedProblem, phase: nextStage === 'diagnostic' ? 'Step 1' : nextStage === 'proof' ? 'Step 3' : 'Step 2', stage: nextStage,
+      setState({ modules, teaching, gaps, selectedFocus: focusSkill || state.selectedFocus, diagnosisSummary: stage === 'diagnostic' && nextStage === 'learning' ? (gaps.length ? 'These ideas need a little attention. Choose one to work on, or continue with the guided practice.' : 'Your answers show a good starting point. We’ll connect the ideas and build the full argument.') : state.diagnosisSummary, theorem: recognizedProblem, phase: nextStage === 'diagnostic' ? 'Step 1' : nextStage === 'proof' ? 'Step 3' : 'Step 2', stage: nextStage,
         learningPlan: output.learningPlan || { focus: cleanTutorText(output.diagnosedSkill || nextQuestion.skill || 'Your problem'), nextMove: 'Work on the idea that needs attention, then reconstruct the proof and revisit it later.' },
         currentQuestion: nextQuestion, lastQuestion: answer && question ? question : state.lastQuestion, history: updatedHistory,
         mode: !focusSkill && (repetition || state.mode === 'repetition') ? 'repetition' : 'guided', diagnosticsCount: diagnosticCount,
@@ -166,7 +174,14 @@ function App() {
     const question = start ? null : state.currentQuestion || null;
     const answer = start || focusSkill ? null : choice || null;
     const theorem = start ? problemText.trim() : state.theorem || '';
+    const pendingHistory = answer && question ? [...history, { question, isCorrect: answer === question.correctAnswer, reasoningSound: reasoning.trim() ? false : true }] : history;
+    const modules = validModules(state.modules) ? state.modules! : [];
+    const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
     const body = {
+      prerequisites: start ? [] : modules,
+      moduleProgress: modules.map(m => moduleProgress(m, pendingHistory)),
+      selectedModule: start ? '' : target?.id || '',
+      lessonStart: Boolean(focusSkill),
       theorem,
       image: start && image && !textOnly ? { mimeType: image.mimeType, data: image.data } : undefined,
       phase: start ? 'Step 1' : currentStep === 1 ? 'Step 1' : currentStep === 3 ? 'Step 3' : 'Step 2',
@@ -177,7 +192,7 @@ function App() {
       currentQuestion: question,
       answer,
       reasoning: answer ? reasoning : '',
-      history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, reasoning: item.reasoning, feedback: item.feedback })),
+      history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
       diagnosticsCount: start ? 0 : Math.min(10, state.diagnosticsCount || 0),
       consecutiveCorrect: start ? 0 : answer && question ? answer === question.correctAnswer ? Math.min(5, currentStreak + 1) : 0 : Math.min(5, currentStreak),
       learnerFeedback: start ? { tags: [], note: '' } : { tags: feedbackTags, note: feedbackNote },
@@ -205,7 +220,7 @@ function App() {
   function enterRepetition(target?: Question) {
     const question = target || repeatedQuestion;
     if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
-    setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', stage: 'repetition', feedback: '', explanation: '', verdict: null, phase: 'Repetition' }));
+    setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', stage: 'repetition', feedback: '', explanation: '', teaching: undefined, verdict: null, phase: 'Repetition' }));
     setChoice(''); setReasoning(''); setShowDiagram(false); setError('');
   }
   async function attachImage(file?: File) {
@@ -264,13 +279,15 @@ function App() {
             <div className="userBubble problemBubble"><span className="bubbleLabel">YOUR PROBLEM</span><div><MathText text={state.theorem || ''} /></div></div>
             {state.feedback && attempts === 0 && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">LET’S BEGIN</div><p><MathText text={state.feedback} /></p>{state.explanation && <p className="explanationText"><MathText text={state.explanation} /></p>}</div></div>}
             {history.map((item, index) => <React.Fragment key={`${item.time}-${index}`}>
+              {item.teachingBefore && <TeachingCard lesson={item.teachingBefore} />}
               <div className="assistantMessage pastQuestion"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">QUESTION</div><div className="questionPrompt"><MathText text={item.question.prompt} /></div><details className="pastOptions"><summary>View choices</summary>{item.question.options.map((option, optionIndex) => <p key={optionIndex}><strong>{'ABCDE'[optionIndex]}.</strong> <MathText text={option.replace(/^[A-E][.):]\s*/, '')} /></p>)}</details></div></div>
               <div className="userBubble answerBubble"><span className="bubbleLabel">YOUR ANSWER</span><p><MathText text={answerLabel(item)} /></p>{item.reasoning && <p className="answerReasoning">{item.reasoning}</p>}</div>
               <div className="assistantMessage"><div className={`assistantMark ${item.isCorrect ? 'markCorrect' : item.isCorrect === false ? 'markReview' : ''}`}>{item.isCorrect ? <Check size={17} /> : <BookOpen size={17} />}</div><div className={`assistantBubble ${item.isCorrect === false ? 'reviewBubble' : item.isCorrect ? 'correctBubble' : ''}`}><div className="messageLabel">{item.isCorrect ? 'CORRECT' : item.isCorrect === false ? 'LET’S REVIEW THIS' : 'TUTOR'}</div><p><MathText text={item.feedback} /></p>{item.explanation && <p className="explanationText"><MathText text={item.explanation} /></p>}<button className="inlineRepeat" disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div></div>
             </React.Fragment>)}
 
             {attempts > 0 && state.feedback && state.feedback !== history.at(-1)?.feedback && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p><MathText text={state.feedback} /></p><p className="explanationText"><MathText text={state.explanation} /></p></div></div>}
-            {<div className="assistantMessage currentTurn" ref={currentTurnRef}><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
+            <div ref={currentTurnRef}>{state.teaching && <TeachingCard lesson={state.teaching} />}</div>
+            {<div className="assistantMessage currentTurn" ><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
               <div className="questionMeta"><span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'finding your pace'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" disabled={busy} onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
               <div className="questionPrompt"><MathText text={active.prompt} /></div>
               {active.diagram?.type && active.diagram.type !== 'none' && <><button className="visualToggle" onClick={() => setShowDiagram(!showDiagram)}>{showDiagram ? 'Hide visual' : 'Show a visual'} <ChevronRight size={15} className={showDiagram ? 'chevronOpen' : ''} /></button>{showDiagram && <SequenceDiagram diagram={active.diagram} />}</>}
@@ -280,7 +297,15 @@ function App() {
             </div></div>}
             {error && <div className="error" role="alert">{error}</div>}
           </section>
-          {stage !== 'diagnostic' && <aside className="learningPanel" aria-label="Your learning notes"><div className="panelHeading">YOUR LEARNING NOTES</div><h2>Your next steps</h2><p>{state.diagnosisSummary || 'Choose an idea to practise, or continue the conversation.'}</p><div className="gapList">{(state.gaps || []).length ? state.gaps!.map(gap => <div className={`gapCard ${state.selectedFocus === gap.skill ? 'activeGap' : ''}`} key={gap.skill}><button disabled={busy} onClick={() => void callTutor({ focusSkill: gap.skill })}><span>{gap.secure ? 'Revisit' : 'Practise'}</span><strong>{gap.skill}</strong><ChevronRight size={18} /></button><details><summary>Tutor feedback</summary><p><MathText text={gap.feedback} /></p><p><MathText text={gap.explanation} /></p></details></div>) : <button className="gapCard focusButton" disabled={busy} onClick={() => void callTutor({ focusSkill: state.learningPlan?.focus || active.skill || 'Proof structure' })}>Connect the ideas <ChevronRight size={18} /></button>}</div><details className="diagnosticNotes"><summary>Feedback from your check-in</summary>{history.filter(item => !item.stage || item.stage === 'diagnostic').map((item, index) => <div key={index}><strong>{item.question.skill || 'Problem reasoning'}</strong><p><MathText text={item.feedback} /></p>{item.reasoning && <p>Your reasoning: {item.reasoning}</p>}</div>)}</details><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help</button><p className="panelFoot">These notes stay with your learning history in this browser.</p></aside>}
+          {stage !== 'diagnostic' && <aside className="learningPanel" aria-label="Prerequisite learning map"><div className="panelHeading">YOUR LEARNING MAP</div><h2>Ideas to work on</h2><p>Choose a topic for an explanation and practice. Each topic keeps its own learning history.</p>
+            {!(state.modules || []).length && <p className="mapNotice">The tutor server needs its latest update to build the full prerequisite map. Your saved feedback is below.</p>}
+            <div className="moduleMap">{(state.modules || []).map(module => { const progress = moduleProgress(module, history); const selected = active.moduleId === module.id; return <div className={`moduleNode ${progress.status} ${selected ? 'moduleSelected' : ''}`} key={module.id}>
+              {module.dependsOn.length > 0 && <div className="moduleDependencies">Builds on {module.dependsOn.map(id => <button key={id} disabled={busy} onClick={() => void callTutor({ focusSkill: state.modules!.find(m => m.id === id)!.title })}>{state.modules!.find(m => m.id === id)!.title}</button>)}</div>}
+              <button className="moduleStart" disabled={busy} aria-pressed={selected} onClick={() => void callTutor({ focusSkill: module.title })}><span className="moduleStatus">{progress.label}</span><strong>{module.title}</strong><span>{module.purpose}</span><div className="moduleStrength" role="img" aria-label={progress.label}><i style={{ width: `${12 + 88 * progress.strength}%` }} /></div><span className="moduleAction">{selected ? 'Continue this topic' : progress.ready ? 'Revisit this topic' : 'Learn & practise'} <ChevronRight size={15} /></span></button>
+              {history.filter(item => item.question.moduleId === module.id || item.question.skill === module.title).length > 0 && <details><summary>Feedback & learning gaps</summary>{history.filter(item => item.question.moduleId === module.id || item.question.skill === module.title).slice(-3).map((item,index) => <p key={index}><MathText text={item.feedback} /></p>)}</details>}
+            </div>; })}</div>
+            {!(state.modules || []).length && <div className="gapList">{(state.gaps || []).map(gap => <div className="gapCard" key={gap.skill}><strong>{gap.skill}</strong><p><MathText text={gap.feedback} /></p></div>)}</div>}
+            <details className="diagnosticNotes"><summary>Feedback from your check-in</summary>{history.filter(item => !item.stage || item.stage === 'diagnostic').map((item,index) => <div key={index}><strong>{item.question.skill || 'Problem reasoning'}</strong><p><MathText text={item.feedback} /></p>{item.reasoning && <p>Your reasoning: {item.reasoning}</p>}</div>)}</details><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help</button><p className="panelFoot">Color shows learning evidence, not a score. You can revisit any topic.</p></aside>}
           {showHistory && <div className="historyCard"><strong>Answered questions</strong>{[...history].reverse().map((item, index) => <div className="historyItem" key={`${item.time}-${index}`}><p><MathText text={item.question.prompt} /></p><button disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div>)}</div>}
           <footer>Practice stays in this browser. No account is required.</footer>
         </>}
