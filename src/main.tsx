@@ -176,7 +176,8 @@ function App() {
     const theorem = start ? problemText.trim() : state.theorem || '';
     const pendingHistory = answer && question ? [...history, { question, isCorrect: answer === question.correctAnswer, reasoningSound: reasoning.trim() ? false : true }] : history;
     const modules = validModules(state.modules) ? state.modules! : [];
-    const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
+    const currentModule = modules.find(m => m.id === question?.moduleId);
+    const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage === 'learning' && currentModule && !moduleProgress(currentModule, pendingHistory).ready ? currentModule : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
     const body = {
       prerequisites: start ? [] : modules,
       moduleProgress: modules.map(m => moduleProgress(m, pendingHistory)),
