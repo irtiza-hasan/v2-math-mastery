@@ -2,6 +2,8 @@
 
 ## Design and implementation
 
+The learning workspace uses one centered conversational reading column (maximum 850 px). The left navigation groups courses and saved sessions; original problem, prerequisite map, course evidence, notes, and scratchwork open inline above the conversation. There is no permanent right rail or permanent phase navigator. Interface controls use Roboto Mono, explanatory prose uses Source Serif 4, and KaTeX retains its own mathematical fonts.
+
 The redesign extends the existing React / TypeScript / Vite application. It retains the KaTeX parser, screenshot compression and transcription confirmation, validated prerequisite DAG, per-module teaching, audited five-option questions with independent F, learner feedback, and existing Cloudflare Worker / Gemini provider. The provider was not replaced and no browser API key was introduced.
 
 The course dashboard uses the supplied white-and-teal showcase as visual direction. Course context stays in the navigation, mathematical work occupies the center, and learning context appears in a collapsible right panel. Small screens use an accessible navigation drawer and stack the insights beneath the work. Seven named phase views replace the anonymous three-step navigation. Viewing a phase is not evidence of completion.
