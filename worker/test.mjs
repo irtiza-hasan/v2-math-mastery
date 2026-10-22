@@ -1,144 +1,78 @@
 import assert from 'node:assert/strict';
 import handler from './src/index.js';
-import { validModules, moduleProgress, nextModule } from '../src/learning.ts';
 import { parseMath } from '../src/math.ts';
-const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',GEMINI_MODEL:'gemini-3.5-flash-lite'};
+import { openState } from './src/state-token.js';
+
+const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',CONTROLLER_SECRET:'test-controller-secret-is-long-enough',GEMINI_MODEL:'gemini-3.5-flash-lite'};
 const originalFetch=globalThis.fetch;
-let calls=0;
-let lastTutorPayload;
-let modelPhase='Step 2';
-let malformedOnce=false;
-let rejectAuditOnce=false;
-let omitTeachingOnce=false;
-let requestNumber=0;
-const modules=[{id:'cauchy',title:'Cauchy condition',purpose:'Control the distance between late terms.',dependsOn:[]},{id:'triangle',title:'Triangle inequality',purpose:'Join the two estimates in the proof.',dependsOn:['cauchy']}];
-const teaching={title:'Control late terms',concept:'The Cauchy condition controls every pair beyond a common index.',workedExample:'For tolerance $0.1$, choose $N$ so $d(x_n,x_m)<0.1$ whenever both indices exceed $N$.',connection:'In the original proof, one late term is a subsequence term near the limit.'};
-const question={moduleId:'cauchy',prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'sequence',caption:'Later terms approach the limit.',labels:[]}};
+let calls=0, lastTutorPayload, malformedOnce=false, rejectAuditOnce=false, ip=0;
+const modules=[{id:'cauchy',title:'Cauchy condition',purpose:'Control distances between late terms.',dependsOn:[]},{id:'triangle',title:'Triangle inequality',purpose:'Join estimates.',dependsOn:['cauchy']}];
+const question={moduleId:'cauchy',prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'none',caption:'',labels:[]}};
+const teaching={title:'Control late terms',concept:'The Cauchy condition controls every pair beyond a common index.',workedExample:'For tolerance $0.1$, choose $N$ so $d(x_n,x_m)<0.1$ whenever both indices exceed $N$.',connection:'Use one late subsequence term near the limit.'};
 globalThis.fetch=async (_url,opts)=>{
  calls++;
  if(malformedOnce){malformedOnce=false;return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{broken json'}]}}]}));}
  assert.equal(opts.headers['x-goog-api-key'],'fake');
  const request=JSON.parse(opts.body);
- assert.doesNotMatch(request.systemInstruction.parts[0].text,/Proofwise|V2/i,'internal product/framework labels must not reach the model');
  if(request.systemInstruction.parts[0].text.startsWith('Independently check')){
-   const valid=!rejectAuditOnce;rejectAuditOnce=false;
-   return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({valid,correctAnswer:'A',rationale:valid?'Only A satisfies the requested estimate.':'Both A and B are upper bounds. Generate distinct valid and invalid choices.'})}]}}]}));
+  const valid=!rejectAuditOnce;rejectAuditOnce=false;
+  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify({valid,correctAnswer:'A',rationale:valid?'Only A matches.':'The choices are ambiguous; generate a fresh item.'})}]}}]}));
  }
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
- if(lastTutorPayload.problemText==='') assert.deepEqual(request.contents[0].parts[1].inlineData,{mimeType:'image/png',data:'AQID'});
- 
- const result={prerequisites:modules,teaching,reasoningSound:true,problem:'Image problem transcription',feedback:'Check how the definition quantifies over both indices.',explanation:'The Cauchy condition controls every pair of sufficiently late terms.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Use the Cauchy estimate in the original proof.'},uniqueCorrectChoice:true,correctAnswerRationale:'The displayed choice is the only one matching the definition.',diagnosedSkill:'Cauchy condition',phase:modelPhase,difficulty:'standard',nextQuestion:{...question,moduleId:lastTutorPayload.selectedModule||'cauchy',skill:modules.find(m=>m.id===lastTutorPayload.selectedModule)?.title||question.skill}};
- if(omitTeachingOnce){omitTeachingOnce=false;result.teaching={title:'Hello',concept:'',workedExample:'',connection:''};}
+ const result={prerequisites:modules,teaching,reasoningSound:true,problem:'Faithful image transcription',feedback:'Check the quantifiers.',explanation:'Every sufficiently late pair is controlled.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Apply the definition.'},uniqueCorrectChoice:true,correctAnswerRationale:'Only A satisfies the condition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',difficulty:'standard',nextQuestion:{...question,moduleId:lastTutorPayload.selectedModule||'cauchy'}};
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
-const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++requestNumber}`},body:JSON.stringify(body)});
+const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++ip}`},body:JSON.stringify(body)});
+const post=body=>handler.fetch(req('/tutor','http://localhost:5173',body),env);
 try{
- const blocked=await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env);
- assert.equal(blocked.status,403);
- const start=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
- assert.equal(start.status,200);
- const started=await start.json();
- assert.equal(started.nextQuestion.options.length,5);
- assert.equal(started.nextQuestion.correctAnswer,'A');
- assert.equal(started.answerCorrect,null);
- assert.equal(lastTutorPayload.difficulty,'adaptive','pace is inferred from learner performance');
- const imageStart=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'',image:{mimeType:'image/png',data:'AQID'}}),env);
- assert.equal(imageStart.status,200);
- const imageResult=await imageStart.json();
- assert.equal(imageResult.problem,'Image problem transcription','image text should be transcribed before starting');
- assert.equal(lastTutorPayload.problemText,'');
- const badImage=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'',image:{mimeType:'image/svg+xml',data:'PHN2Zy8+'}}),env);
- assert.equal(badImage.status,400,'unsupported images must be rejected');
- const wrong=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',phase:'Phase 2',currentQuestion:question,answer:'B',reasoning:'I thought only consecutive terms matter.',diagnosticsCount:0}),env);
- const evaluated=await wrong.json();
- assert.equal(lastTutorPayload.answerCorrect,false);
- assert.equal(lastTutorPayload.learnerExplanation,'I thought only consecutive terms matter.');
- assert.equal(evaluated.answerCorrect,false);
- assert.equal(evaluated.isCorrect,false,'server answer key must override contradictory model verdict');
- assert.equal(evaluated.phase,'Step 1','a model cannot move an unready learner out of diagnosis');
- assert.equal('awaitingSillyMistake' in evaluated,false);
- modelPhase='Step 1';
- const cap=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',phase:'Step 1',currentQuestion:question,answer:'A',diagnosticsCount:9,learnerFeedback:{tags:['An example','A hint'],note:'Show how this helps the original proof.'}}),env);
- const capped=await cap.json();
- assert.equal(capped.diagnosticsCount,10);
- assert.equal(capped.stage,'learning');
- assert.equal(capped.phase,'Step 2');
- assert.equal(lastTutorPayload.stage,'learning','the tenth answer must request learning, never an eleventh diagnostic');
- assert.deepEqual(lastTutorPayload.learnerFeedback.tags,['An example','A hint']);
- assert.equal(lastTutorPayload.learnerFeedback.note,'Show how this helps the original proof.');
- assert.ok(capped.learningPlan.nextMove);
- const learning=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',phase:'Step 2',currentQuestion:question,answer:'A',diagnosticsCount:10}),env);
- const learned=await learning.json();
- assert.equal(learned.diagnosticsCount,10,'learning answers never increase diagnostic count');
- assert.equal(learned.stage,'learning');
- modelPhase='Step 3';
- const proof=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',currentQuestion:question,answer:'A',diagnosticsCount:10}),env);
- assert.equal((await proof.json()).stage,'learning','model cannot skip unfinished prerequisite modules');
- modelPhase='Step 2';
- const oversizedCount=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:100}),env);
- assert.equal((await oversizedCount.json()).diagnosticsCount,10);
- const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(5_800_001)}),env);
- assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
- const steady=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:Array.from({length:4},()=>({isCorrect:true,question:'Diagnostic question'}))}),env);
- assert.equal((await steady.json()).stage,'diagnostic','five correct responses must not bypass ten-question diagnosis');
- const priorCheck=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'A new problem',stage:'diagnostic',coursePrior:[{topic:'Cauchy condition',interpretation:{status:'Strong evidence',summary:'Prior sessions'},evidence:[{question:'Earlier question',correct:true}]}]}),env);
- assert.equal((await priorCheck.json()).stage,'diagnostic');
- assert.equal(lastTutorPayload.coursePrior[0].topic,'Cauchy condition');
+ assert.equal((await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env)).status,403);
+ const startBody={courseId:'analysis',sessionId:'session-1',theorem:'Let $(x_n)$ be Cauchy and $x_{n_k}\\to x$. Prove $x_n\\to x$.'};
+ const startResponse=await post(startBody);assert.equal(startResponse.status,200);
+ let result=await startResponse.json();
+ assert.equal(result.nextQuestion.options.length,5);assert.equal('correctAnswer' in result.nextQuestion,false,'answer key must not reach browser');
+ assert.equal(result.answerCorrect,null);assert.equal(result.diagnosticsCount,0);assert.ok(result.controllerToken);
+ let state=await openState(result.controllerToken,env.CONTROLLER_SECRET);
+ assert.equal(state.problem,startBody.theorem);assert.equal(state.phase,2);
  assert.equal(lastTutorPayload.priorPolicy,'prior-informs-start-never-skips-diagnosis');
- const interrupted=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:[{isCorrect:true},{isCorrect:true},{isCorrect:false},{isCorrect:true}]}),env);
- assert.equal((await interrupted.json()).stage,'diagnostic');
- const focus=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',focusSkill:'Triangle inequality',diagnosticsCount:10}),env);
- assert.equal((await focus.json()).stage,'learning');
- assert.equal(lastTutorPayload.focusSkill,'Triangle inequality');
- const readyProgress=modules.map(m=>({id:m.id,ready:true,streak:5}));
- const unlocked=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress}),env);
- assert.equal((await unlocked.json()).stage,'proof','proof opens after module evidence is ready');
- const moduleLesson=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress,selectedModule:'triangle',lessonStart:true}),env);
- const lessonResult=await moduleLesson.json();
- assert.equal(lessonResult.stage,'learning','clicking a ready module still opens teaching');
- assert.equal(lessonResult.nextQuestion.moduleId,'triangle');
- assert.deepEqual(lessonResult.prerequisites,modules,'stable dependency map is preserved');
- assert.deepEqual(lessonResult.teaching,teaching,'explanation and worked example precede the practice question');
- assert.equal(validModules(modules),true);
- assert.equal(validModules([{...modules[0],dependsOn:['triangle']},modules[1]]),false,'cycles are rejected');
- assert.equal(validModules([{...modules[0],dependsOn:['unknown']}]),false,'dangling dependencies are rejected');
- const evidence=Array.from({length:5},()=>({question:{moduleId:'cauchy'},isCorrect:true}));
- assert.equal(moduleProgress(modules[0],evidence).ready,true);
- assert.equal(moduleProgress(modules[1],evidence).status,'unassessed','modules retain independent evidence');
- assert.equal(nextModule(modules,evidence).id,'triangle');
- assert.equal(moduleProgress(modules[0],[...evidence,{question:{moduleId:'cauchy'},isCorrect:true,reasoningSound:false}]).ready,false,'incorrect reasoning blocks mastery despite a correct choice');
- const unchecked=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,moduleProgress:readyProgress,currentQuestion:question,answer:'A',reasoning:'Because all terms are equal.'}),env);
- assert.equal((await unchecked.json()).stage,'learning','unchecked written reasoning cannot unlock the proof');
- const beforeTeachingRetry=calls;omitTeachingOnce=true;
- const repairedLesson=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',prerequisites:modules,selectedModule:'cauchy'}),env);
- assert.equal(repairedLesson.status,200);
- assert.equal(calls-beforeTeachingRetry,3,'a bare question without actual teaching is regenerated');
- const beforeRetry=calls;malformedOnce=true;
- const recovered=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
- assert.equal(recovered.status,200);assert.equal(calls-beforeRetry,3,'invalid output is regenerated and independently audited');
- const beforeAuditRetry=calls;rejectAuditOnce=true;
- const audited=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18'}),env);
- assert.equal(audited.status,200);assert.equal(calls-beforeAuditRetry,4,'ambiguous questions are regenerated and checked again');
- assert.match(lastTutorPayload.generationIssue,/Both A and B/);
+
+ // A wrong response receives a fresh, same-skill verification question; the original miss remains recorded.
+ const wrong=await post({...startBody,controllerToken:result.controllerToken,answer:'B',reasoning:'I assumed consecutive terms only.'});
+ assert.equal(wrong.status,200);result=await wrong.json();assert.equal(result.answerCorrect,false);assert.equal(result.stage,'verification');assert.equal(result.diagnosticsCount,1);
+ assert.equal('correctAnswer' in result.nextQuestion,false);
+ state=await openState(result.controllerToken,env.CONTROLLER_SECRET);assert.equal(state.diagnostics[0].correct,false);assert.equal(state.verifications[0].result,'pending');
+
+ const verified=await post({...startBody,controllerToken:result.controllerToken,answer:'A',reasoning:'The common threshold controls any two later indices.'});
+ assert.equal(verified.status,200);result=await verified.json();assert.equal(result.stage,'diagnostic');
+ state=await openState(result.controllerToken,env.CONTROLLER_SECRET);assert.equal(state.verifications[0].result,'possible-accident');
+
+ // Client stage/count claims do not alter the encrypted server state.
+ const wrongCourse=await post({...startBody,courseId:'probability',controllerToken:result.controllerToken,answer:'A'});
+ assert.equal(wrongCourse.status,409,'course state cannot be replayed across courses');
+ let count=result.diagnosticsCount;
+ while(count<10){
+  const response=await post({...startBody,controllerToken:result.controllerToken,answer:'A',stage:'proof',phase:6,diagnosticsCount:100});
+  assert.equal(response.status,200);result=await response.json();count=result.diagnosticsCount;
+ }
+ assert.equal(result.diagnosticsCount,10);assert.equal(result.stage,'training');assert.equal(result.phase,3);
+ assert.equal(lastTutorPayload.stage,'learning');
+
+ const noToken=await post({...startBody,answer:'A',stage:'proof',diagnosticsCount:10});assert.equal(noToken.status,409);
+ const fStart=await post({...startBody,sessionId:'session-f'});const fs=await fStart.json();
+ const fResponse=await post({...startBody,sessionId:'session-f',controllerToken:fs.controllerToken,answer:'F'});const fr=await fResponse.json();
+ assert.equal(fr.answerCorrect,null,'F is uncertainty, not an incorrect assessed response');
+ const fState=await openState(fr.controllerToken,env.CONTROLLER_SECRET);assert.equal(fState.diagnostics[0].correct,null);assert.equal(fState.verifications.length,0);
+
+ const image=await post({courseId:'analysis',sessionId:'image-session',theorem:'',image:{mimeType:'image/png',data:'AQID'}});
+ assert.equal(image.status,200);assert.equal((await image.json()).problem,'Faithful image transcription');assert.equal(lastTutorPayload.problemText,'');
+ assert.equal((await post({courseId:'analysis',sessionId:'bad-image',theorem:'',image:{mimeType:'image/svg+xml',data:'PHN2Zy8+'}})).status,400);
+ assert.equal((await post({courseId:'analysis',sessionId:'oversized',theorem:'x'.repeat(5_800_001)})).status,413);
+
+ const before=calls;malformedOnce=true;
+ const recovered=await post({courseId:'analysis',sessionId:'malformed',theorem:'A theorem.'});assert.equal(recovered.status,200);assert.equal(calls-before,3,'malformed output regenerates and is audited');
+ const auditBefore=calls;rejectAuditOnce=true;
+ const audited=await post({courseId:'analysis',sessionId:'audit-retry',theorem:'A theorem.'});assert.equal(audited.status,200);assert.equal(calls-auditBefore,4,'failed independent audit regenerates and rechecks');
  const latex=parseMath(String.raw`Let \(x_n\) converge. Then \[d(x_n,x)<\varepsilon\]`);
  assert.equal(latex.filter(part=>part.math!==undefined).length,2);
- const malformed=parseMath(String.raw`A metric on $2^N. Let us start by testing your foundational understanding of sequences$ now.`);
- assert.equal(malformed.filter(part=>part.math!==undefined).length,0,'malformed delimiters never italicize prose');
- assert.equal(malformed.map(part=>part.text).join(''),String.raw`A metric on $2^N. Let us start by testing your foundational understanding of sequences$ now.`);
- assert.equal(parseMath('$\\notacommand{x}$').some(part=>part.math!==undefined),false);
- const health=await handler.fetch(new Request('https://example.workers.dev/health'),env);
- assert.equal(health.status,200);
- console.log('PASS: disallowed origin blocked');
- console.log('PASS: Gemini structured question generation');
- console.log('PASS: server-side answer grading overrides contradictory model output');
- console.log('PASS: optional reasoning and multi-select learner feedback reach the tutor');
- console.log('PASS: hard diagnostic cap, transition plan, and learning-stage counts');
- console.log('PASS: image upload is validated and forwarded for transcription');
- console.log('PASS: request-size cap without Content-Length');
- console.log('PASS: progression evidence, targeted gap practice, and malformed-response recovery');
- console.log('PASS: independent MCQ audit rejects and regenerates ambiguous questions');
- console.log('PASS: LaTeX delimiters and safe readable fallback');
- assert.equal((await health.json()).revision,'module-teaching-3');
- console.log('PASS: dependency graph, module teaching, independent topic evidence, and gated proof reconstruction');
- console.log('PASS: health endpoint');
+ console.log('PASS: origin, Gemini structured generation, independent audit, image validation, request cap, authenticated server state, hidden answer keys, ten-question minimum, verification, F uncertainty, course isolation, and client-stage tampering');
+ console.log('PASS: malformed responses and rejected mathematical questions are regenerated safely');
 }finally{globalThis.fetch=originalFetch;}

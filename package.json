@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "check": "node --check worker/src/index.js && npm run typecheck",
     "typecheck": "tsc --noEmit",
-    "test": "node worker/test.mjs && node tests/frontend.mjs && node tests/math.mjs",
+    "test": "node worker/test.mjs && node worker/controller.test.mjs && node worker/learning-actions.test.mjs && node tests/frontend.mjs && node tests/math.mjs",
     "dev:qa": "vite --config tests/qa-vite.config.ts"
   },
   "dependencies": {

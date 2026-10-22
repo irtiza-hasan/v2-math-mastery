@@ -57,7 +57,7 @@ Prior observations from other sessions are supplied separately as `coursePrior`.
 | Cloud persistence, authentication, multi-device sync | Not implemented |
 | Demo or fabricated student evidence | None seeded or presented as real |
 
-The UI explicitly marks unsupported solution/transfer backend features. It never displays an invented full solution or marks a navigated phase complete. The internal Worker stage name `proof` is retained for API compatibility and displayed as general solution integration.
+The Worker now supplies encrypted, server-authenticated progression state, audited question keys, integration-step evaluation, verified solution unlock, transfer generation/evaluation, and retrieval question generation. See `TUTORING_ENGINE.md` for the current rules and the remaining authoritative-prompt gap.
 
 ## Pedagogical specification
 

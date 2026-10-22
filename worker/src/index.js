@@ -1,5 +1,9 @@
+import { openState, sealState } from './state-token.js';
+import { assertCourseIsolation, createLearningState, transition } from './controller.js';
+import { handleLearningAction } from './learning-actions.js';
 const SKILLS = ['convergence','sequences','continuity','compactness','boundedness','epsilon proofs','definitions','proof structure'];
 const MAX_DIAGNOSTICS = 10;
+const DIAGNOSTIC_MINIMUM = 10;
 const MAX_BODY_BYTES = 5_800_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg','image/png','image/webp']);
@@ -10,7 +14,7 @@ function validQuestion(q) {return q && typeof q.prompt==='string' && q.prompt.le
 function scrubMessage(message){ return String(message||'').slice(0,6000); }
 function sanitizeQuestion(q){
  const diagram=q.diagram&&['sequence','numberLine','mapping','none'].includes(q.diagram.type)?{type:q.diagram.type,caption:String(q.diagram.caption||'').slice(0,300),labels:Array.isArray(q.diagram.labels)?q.diagram.labels.slice(0,4).map(x=>String(x).slice(0,40)):[]}:{type:'none',caption:'',labels:[]};
- return {moduleId:String(q.moduleId||'').slice(0,60),prompt:q.prompt,options:q.options,skill:String(q.skill||'problem reasoning').slice(0,80),difficulty:['foundation','standard','challenge'].includes(q.difficulty)?q.difficulty:'standard',correctAnswer:q.correctAnswer,diagram};
+ return {moduleId:String(q.moduleId||'').slice(0,60),prompt:q.prompt,options:q.options,skill:String(q.skill||'problem reasoning').slice(0,80),assessmentType:['definition','interpretation','manipulation','reasoning','application'].includes(q.assessmentType)?q.assessmentType:'reasoning',difficulty:['foundation','standard','challenge'].includes(q.difficulty)?q.difficulty:'standard',correctAnswer:q.correctAnswer,diagram};
 }
 function safeOrigin(origin, allowed){return origin===allowed || (allowed==='http://localhost:5173' && origin==='http://127.0.0.1:5173');}
 // Per-isolate burst guard; this is a basic barrier, not a durable/global quota.
@@ -41,33 +45,38 @@ export default {async fetch(request,env){
  const cors=safeOrigin(origin,allowed)?{'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type'}:{};
  if(request.method==='OPTIONS')return safeOrigin(origin,allowed)?new Response(null,{status:204,headers:cors}):json({error:'Origin not allowed'},403);
  if(new URL(request.url).pathname==='/health')return json({ok:true,revision:'module-teaching-3',supportsImages:true,maxImageBytes:MAX_IMAGE_BYTES,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite'});
- if(request.method!=='POST'||new URL(request.url).pathname!=='/tutor')return json({error:'Not found'},404,cors);
+ const pathname=new URL(request.url).pathname;
+ if(request.method!=='POST'||!['/tutor','/learning'].includes(pathname))return json({error:'Not found'},404,cors);
  if(!safeOrigin(origin,allowed))return json({error:'Origin not allowed'},403);
  if(!env.GEMINI_API_KEY)return json({error:'Server API key not configured'},503,cors);
  if(rateLimited(request.headers.get('CF-Connecting-IP')||'unknown'))return json({error:'Too many requests. Please wait a minute and try again.'},429,cors);
+ if(pathname==='/learning')return handleLearningAction(request,env,cors);
  const length=Number(request.headers.get('Content-Length')||0);if(length>MAX_BODY_BYTES)return json({error:'Request too large'},413,cors);
  let rawBody;try{rawBody=await request.text();}catch{return json({error:'Invalid request body'},400,cors);}
  if(new TextEncoder().encode(rawBody).byteLength>MAX_BODY_BYTES)return json({error:'Request too large'},413,cors);
  let body;try{body=JSON.parse(rawBody);}catch{return json({error:'Invalid JSON'},400,cors);}
  if(!body||typeof body!=='object'||Array.isArray(body))return json({error:'Invalid request body'},400,cors);
- const theorem=typeof body.theorem==='string'?body.theorem.trim():'';
+ let trustedState=null;
+ if(body.controllerToken){try{trustedState=await openState(body.controllerToken,env.CONTROLLER_SECRET||env.GEMINI_API_KEY);assertCourseIsolation(trustedState,String(body.courseId||''),String(body.sessionId||''));}catch{return json({error:'Learning state is invalid or belongs to another course/session. Start a new problem or restore its saved controller state.'},409,cors);}}
+ const theorem=trustedState?.problem||(typeof body.theorem==='string'?body.theorem.trim():'');
  const image=body.image===undefined||body.image===null?null:body.image;
- const phase=scrubMessage(body.phase);const answer=body.answer;
+ const phase=trustedState?String(trustedState.phase):scrubMessage(body.phase);const answer=body.answer;
  const history=Array.isArray(body.history)?body.history.slice(-10).map(h=>({question:scrubMessage(h.question),choice:scrubMessage(h.choice),isCorrect:typeof h.isCorrect==='boolean'?h.isCorrect:null,skill:scrubMessage(h.skill).slice(0,80),reasoning:scrubMessage(h.reasoning),feedback:scrubMessage(h.feedback)})):[];
  if((!theorem&&!image)||theorem.length>12000||history.length>10||!['A','B','C','D','E','F',null,undefined].includes(answer)||(typeof body.reasoning==='string'&&body.reasoning.length>5000)||(typeof body.note==='string'&&body.note.length>5000))return json({error:'Paste a problem or attach an image, and check that your input is within the size limits.'},400,cors);
  if(image&&!validImage(image))return json({error:'Use a JPG, PNG, or WebP image smaller than 4 MB.'},400,cors);
- const prev=body.currentQuestion && validQuestion(body.currentQuestion)?body.currentQuestion:null;
+ const prev=trustedState?.active?.question||(body.currentQuestion && validQuestion(body.currentQuestion)?body.currentQuestion:null);
+ if(answer&&!trustedState)return json({error:'An authenticated server learning state is required before an answer can be submitted. Start or restore this problem first.'},409,cors);
  if(answer && !prev)return json({error:'Missing active question'},400,cors);
  if(prev && !distinctOptions(prev))return json({error:'Active question has repeated options. Please request a new question.'},400,cors);
- const answerCorrect=answer&&prev?answer===prev.correctAnswer:null;
- const incomingCount=Math.max(0,Math.min(MAX_DIAGNOSTICS,Math.floor(Number(body.diagnosticsCount)||0)));
- const incomingStage=body.mode==='repetition'?'repetition':['diagnostic','learning','proof'].includes(body.stage)?body.stage:/step\s*[23]/i.test(phase)?'learning':'diagnostic';
+ const answerCorrect=answer&&answer!=='F'&&prev?answer===prev.correctAnswer:null;
+ const incomingCount=trustedState?trustedState.diagnostics.length:0;
+ const incomingStage=trustedState?.stage==='verification'?'verification':trustedState?.phase===2?'diagnostic':trustedState?.phase===3?'learning':trustedState?.phase===4?'proof':body.mode==='repetition'?'repetition':'diagnostic';
  const diagnosticsCount=Math.min(MAX_DIAGNOSTICS,incomingCount+(answer&&incomingStage==='diagnostic'?1:0));
  let consecutiveCorrect=0;
  if(answerCorrect===true){consecutiveCorrect=1;for(let i=history.length-1;i>=0&&history[i].isCorrect===true;i--)consecutiveCorrect++;}
  let stage=incomingStage==='diagnostic'&&(diagnosticsCount>=MAX_DIAGNOSTICS)?'learning':incomingStage;
- const prerequisites=validModules(body.prerequisites)?body.prerequisites:[];
- const progress=prerequisites.map(m=>{const p=Array.isArray(body.moduleProgress)?body.moduleProgress.find(x=>x.id===m.id):null;return {id:m.id,streak:Math.max(0,Math.min(5,Math.floor(Number(p?.streak)||0))),ready:p?.ready===true&&Number(p?.streak)>=5};});
+ const prerequisites=trustedState?trustedState.prerequisites:validModules(body.prerequisites)?body.prerequisites:[];
+ const progress=prerequisites.map(m=>{const p=Array.isArray(body.moduleProgress)?body.moduleProgress.find(x=>x.id===m.id):null;return {id:m.id,streak:0,ready:trustedState?.readiness[m.id]?.status==='ready'&&p?.ready===true};});
  // Written reasoning is evaluated by this response; never advance on an unchecked explanation.
  if(answer&&prev&&String(body.reasoning||'').trim()){const p=progress.find(x=>x.id===prev.moduleId);if(p){p.ready=false;p.streak=Math.min(4,p.streak);}}
  const allReady=prerequisites.length>0&&progress.every(p=>p.ready);
@@ -80,11 +89,11 @@ export default {async fetch(request,env){
  const difficulty=['foundation','standard','challenge','adaptive'].includes(body.difficulty)?body.difficulty:'adaptive';
  // Prior observations are context, never inputs to this session's readiness calculation.
  const coursePrior=Array.isArray(body.coursePrior)?body.coursePrior.slice(0,20).filter(p=>p&&typeof p.topic==='string').map(p=>({topic:p.topic.slice(0,100),status:['Not assessed','Developing','Strong evidence','Needs review'].includes(p.interpretation?.status)?p.interpretation.status:'Not assessed',summary:scrubMessage(p.interpretation?.summary).slice(0,400),observations:Array.isArray(p.evidence)?p.evidence.slice(-3).map(e=>({question:scrubMessage(e.question).slice(0,400),correct:typeof e.correct==='boolean'?e.correct:null,reasoningSound:typeof e.reasoningSound==='boolean'?e.reasoningSound:null,time:Number.isFinite(e.time)?e.time:null})):[]})):[];
- const payload={coursePrior,priorPolicy:'prior-informs-start-never-skips-diagnosis',prerequisites,moduleProgress:progress,selectedModule:selectedModule?.id||'',lessonStart:Boolean(body.lessonStart),problemText:theorem,phase,mode:body.mode==='repetition'?'repetition':'guided',difficulty,history,stage,diagnosticsCount,diagnosticLimit:MAX_DIAGNOSTICS,learnerFeedback,currentQuestion:prev?{...sanitizeQuestion(prev),correctAnswer:prev.correctAnswer}:null,learnerAnswer:answer||null,answerCorrect,learnerExplanation:scrubMessage(body.reasoning),diagramRequested:Boolean(body.diagramRequested),focusSkill:scrubMessage(body.focusSkill).slice(0,160),skills:SKILLS};
+ const payload={coursePrior,priorPolicy:'prior-informs-start-never-skips-diagnosis',prerequisites,moduleProgress:progress,selectedModule:trustedState?.active?.question?.moduleId||selectedModule?.id||'',lessonStart:Boolean(body.lessonStart),problemText:theorem,phase,mode:trustedState?.retrieval?.active?'repetition':'guided',difficulty,history,stage,diagnosticsCount,diagnosticLimit:MAX_DIAGNOSTICS,verificationRequired:incomingStage==='verification',verificationSkill:trustedState?.active?.question?.skill||'',learnerFeedback,currentQuestion:prev?{...sanitizeQuestion(prev),correctAnswer:prev.correctAnswer}:null,learnerAnswer:answer||null,answerCorrect,learnerExplanation:scrubMessage(body.reasoning),diagramRequested:Boolean(body.diagramRequested),focusSkill:scrubMessage(body.focusSkill).slice(0,160),skills:SKILLS};
  const diagramSchema={type:'OBJECT',properties:{type:{type:'STRING',enum:['sequence','numberLine','mapping','none']},caption:{type:'STRING'},labels:{type:'ARRAY',items:{type:'STRING'}}},required:['type','caption','labels']};
  const moduleSchema={type:'OBJECT',properties:{id:{type:'STRING'},title:{type:'STRING'},purpose:{type:'STRING'},dependsOn:{type:'ARRAY',items:{type:'STRING'}}},required:['id','title','purpose','dependsOn']};
  const teachingSchema={type:'OBJECT',properties:{title:{type:'STRING'},concept:{type:'STRING'},workedExample:{type:'STRING'},connection:{type:'STRING'}},required:['title','concept','workedExample','connection']};
- const schema={type:'OBJECT',properties:{prerequisites:{type:'ARRAY',items:moduleSchema},teaching:teachingSchema,reasoningSound:{type:'BOOLEAN'},problem:{type:'STRING'},feedback:{type:'STRING'},explanation:{type:'STRING'},isCorrect:{type:'BOOLEAN'},learningPlan:{type:'OBJECT',properties:{focus:{type:'STRING'},nextMove:{type:'STRING'}},required:['focus','nextMove']},diagnosedSkill:{type:'STRING'},phase:{type:'STRING'},difficulty:{type:'STRING',enum:['foundation','standard','challenge']},uniqueCorrectChoice:{type:'BOOLEAN'},correctAnswerRationale:{type:'STRING'},nextQuestion:{type:'OBJECT',properties:{moduleId:{type:'STRING'},prompt:{type:'STRING'},options:{type:'ARRAY',items:{type:'STRING'}},correctAnswer:{type:'STRING',enum:['A','B','C','D','E']},skill:{type:'STRING'},difficulty:{type:'STRING',enum:['foundation','standard','challenge']},diagram:diagramSchema},required:['moduleId','prompt','options','correctAnswer','skill','difficulty','diagram']}},required:['prerequisites','teaching','reasoningSound','problem','feedback','explanation','isCorrect','learningPlan','diagnosedSkill','phase','difficulty','uniqueCorrectChoice','correctAnswerRationale','nextQuestion']};
+ const schema={type:'OBJECT',properties:{prerequisites:{type:'ARRAY',items:moduleSchema},teaching:teachingSchema,reasoningSound:{type:'BOOLEAN'},problem:{type:'STRING'},feedback:{type:'STRING'},explanation:{type:'STRING'},isCorrect:{type:'BOOLEAN'},learningPlan:{type:'OBJECT',properties:{focus:{type:'STRING'},nextMove:{type:'STRING'}},required:['focus','nextMove']},diagnosedSkill:{type:'STRING'},phase:{type:'STRING'},difficulty:{type:'STRING',enum:['foundation','standard','challenge']},uniqueCorrectChoice:{type:'BOOLEAN'},correctAnswerRationale:{type:'STRING'},nextQuestion:{type:'OBJECT',properties:{moduleId:{type:'STRING'},prompt:{type:'STRING'},options:{type:'ARRAY',items:{type:'STRING'}},correctAnswer:{type:'STRING',enum:['A','B','C','D','E']},skill:{type:'STRING'},assessmentType:{type:'STRING',enum:['definition','interpretation','manipulation','reasoning','application']},difficulty:{type:'STRING',enum:['foundation','standard','challenge']},diagram:diagramSchema},required:['moduleId','prompt','options','correctAnswer','skill','assessmentType','difficulty','diagram']}},required:['prerequisites','teaching','reasoningSound','problem','feedback','explanation','isCorrect','learningPlan','diagnosedSkill','phase','difficulty','uniqueCorrectChoice','correctAnswerRationale','nextQuestion']};
  const model=env.GEMINI_MODEL||'gemini-3.5-flash-lite';
  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),55000);
  try{
@@ -102,7 +111,7 @@ export default {async fetch(request,env){
     if(typeof parsed.reasoningSound!=='boolean')throw new Error('Missing reasoning evaluation');
     if(!validModules(map)||!map.some(m=>m.id===parsed.nextQuestion?.moduleId))throw new Error('Invalid prerequisite map or question module');
     if((stage==='learning'||stage==='proof')&&!validTeaching(parsed.teaching))throw new Error('Missing substantive teaching');
-    if(stage==='learning'&&selectedModule&&parsed.nextQuestion.moduleId!==selectedModule.id)throw new Error('Question does not teach the selected module');
+    if((stage==='learning'||stage==='verification')&&selectedModule&&parsed.nextQuestion.moduleId!==selectedModule.id)throw new Error('Question does not teach the selected module');
     if(!validQuestion(parsed.nextQuestion)||parsed.uniqueCorrectChoice!==true||typeof parsed.correctAnswerRationale!=='string'||parsed.correctAnswerRationale.length<8||!distinctOptions(parsed.nextQuestion))throw new Error('Invalid or unaudited generated question');
     const auditSchema={type:'OBJECT',properties:{valid:{type:'BOOLEAN'},correctAnswer:{type:'STRING',enum:['A','B','C','D','E']},rationale:{type:'STRING'}},required:['valid','correctAnswer','rationale']};
     const auditUpstream=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json','x-goog-api-key':env.GEMINI_API_KEY},body:JSON.stringify({systemInstruction:{parts:[{text:AUDIT_INSTRUCTIONS}]},contents:[{role:'user',parts:[{text:JSON.stringify({originalProblem:theorem||parsed.problem,question:parsed.nextQuestion,targetModule:selectedModule||map.find(m=>m.id===parsed.nextQuestion.moduleId),teaching:stage==='learning'||stage==='proof'?parsed.teaching:undefined})}]}],generationConfig:{responseMimeType:'application/json',responseSchema:auditSchema,temperature:0.1,maxOutputTokens:1536}})});
@@ -115,8 +124,30 @@ export default {async fetch(request,env){
   }
 
   const problem=theorem||String(parsed.problem||'').trim();if(!problem||problem.length>12000)throw new Error('Problem transcription unavailable');
-  const nextStage=stage;
-  const response={prerequisites:prerequisites.length?prerequisites:parsed.prerequisites,teaching:validTeaching(parsed.teaching)?parsed.teaching:null,reasoningSound:body.reasoning?parsed.reasoningSound!==false:null,problem,feedback:String(parsed.feedback||'').slice(0,2400),explanation:String(parsed.explanation||'').slice(0,2400),isCorrect:answerCorrect===null?null:answerCorrect,answerCorrect,stage:nextStage,learningPlan:{focus:String(parsed.learningPlan?.focus||parsed.diagnosedSkill||'Your problem').slice(0,200),nextMove:String(parsed.learningPlan?.nextMove||'Practice the missing idea, reconstruct the proof, then revisit it for retention.').slice(0,600)},diagnosedSkill:String(parsed.diagnosedSkill||'').slice(0,100),phase:nextStage==='repetition'?'Repetition':nextStage==='proof'?'Step 3':nextStage==='learning'?'Step 2':'Step 1',difficulty:['foundation','standard','challenge'].includes(parsed.difficulty)?parsed.difficulty:'standard',diagnosticsCount,nextQuestion:sanitizeQuestion(parsed.nextQuestion)};
+  let controlled=trustedState;
+  let nextQuestion=parsed.nextQuestion;
+  const questionId=crypto.randomUUID();
+  if(!controlled){
+    nextQuestion=parsed.nextQuestion;
+    controlled=createLearningState({courseId:String(body.courseId||'default'),sessionId:String(body.sessionId||crypto.randomUUID()),problem,prerequisites:prerequisites.length?prerequisites:parsed.prerequisites,initialQuestion:nextQuestion,questionId});
+  }else if(answer&&prev){
+    const shouldVerify=answerCorrect===false&&trustedState.stage!=='verification'&&!trustedState.retrieval.active;
+    const eventType=shouldVerify?'diagnostic-answer':trustedState.retrieval?.active?'retrieval-observation':trustedState.stage==='verification'?'verification-answer':trustedState.phase===3?'training-observation':'diagnostic-answer';
+    if(shouldVerify)nextQuestion={...parsed.nextQuestion,moduleId:trustedState.active.question.moduleId,skill:trustedState.active.question.skill};
+    const activeGenerated=shouldVerify?{id:questionId,question:nextQuestion}:null;
+    const event=eventType==='training-observation'?{type:eventType,questionId:trustedState.active.id,skillId:trustedState.active.question.moduleId,correct:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,nextQuestion:{id:questionId,question:nextQuestion}}:eventType==='retrieval-observation'?{type:eventType,questionId:trustedState.active.id,skillId:trustedState.active.question.moduleId,correct:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,nextQuestion:{id:questionId,question:nextQuestion}}:{type:eventType,questionId:trustedState.active.id,choice:answer,correct:answerCorrect===null?null:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,objective:parsed.diagnosedSkill,nextQuestion:{id:questionId,question:nextQuestion}};
+    if(shouldVerify){event.type='diagnostic-answer';event.nextQuestion=activeGenerated;}
+    if(eventType==='training-observation')event.objective=trustedState.active.question.assessmentType;
+    controlled=transition(trustedState,event);
+  }else if(trustedState.phase===2&&trustedState.diagnostics.length>=MAX_DIAGNOSTICS&&trustedState.stage!=='verification'){
+    controlled={...trustedState,phase:3,stage:'training'};
+  }else if(trustedState.phase===3&&validModules(prerequisites)){
+    controlled={...trustedState,phase:Math.max(3,trustedState.phase),stage:'training'};
+  }
+  const nextStage=controlled.stage;
+  const controllerToken=await sealState(controlled,env.CONTROLLER_SECRET||env.GEMINI_API_KEY);
+  const { correctAnswer: hiddenAnswer, ...publicQuestion }=sanitizeQuestion(nextQuestion);
+  const response={prerequisites:controlled.prerequisites,teaching:validTeaching(parsed.teaching)?parsed.teaching:null,reasoningSound:body.reasoning?parsed.reasoningSound!==false:null,problem,feedback:String(parsed.feedback||'').slice(0,2400),explanation:String(parsed.explanation||'').slice(0,2400),isCorrect:answerCorrect===null?null:answerCorrect,answerCorrect,stage:nextStage,phase:controlled.phase,diagnosticsCount:controlled.diagnostics.length,readiness:controlled.readiness,remediation:controlled.remediation,learningPlan:{focus:String(parsed.learningPlan?.focus||parsed.diagnosedSkill||'Your problem').slice(0,200),nextMove:String(parsed.learningPlan?.nextMove||'Practice the missing idea, reconstruct the proof, then revisit it for retention.').slice(0,600)},diagnosedSkill:String(parsed.diagnosedSkill||'').slice(0,100),difficulty:['foundation','standard','challenge'].includes(parsed.difficulty)?parsed.difficulty:'standard',nextQuestion:{...publicQuestion,questionId},controllerToken,verification:controlled.verifications.at(-1)||null,solutionUnlocked:controlled.solution.unlocked};
   return json(response,200,cors);
- }catch(e){return json({error:e.name==='AbortError'?'AI request timed out. Try again.':'AI response could not be processed. Try again.'},502,cors);}finally{clearTimeout(timeout);}
+ }catch(e){console.error('Tutor request failed:',e?.message||e);return json({error:e.name==='AbortError'?'AI request timed out. Try again.':'AI response could not be processed. Try again.'},502,cors);}finally{clearTimeout(timeout);}
 }};

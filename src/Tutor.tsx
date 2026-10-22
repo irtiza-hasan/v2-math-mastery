@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { parseMath } from './math';
+import { learningAction, applyActionState } from './learning-api';
 import { validModules, moduleProgress, nextModule, validLesson, type Module, type Lesson } from './learning';
 import { ArrowUp, BookOpen, Check, ChevronRight, LoaderCircle, Paperclip, RotateCcw, X } from 'lucide-react';
 import 'katex/dist/katex.min.css';
 
 type Diagram = { type: 'sequence' | 'numberLine' | 'mapping' | 'none'; caption: string; labels?: string[] };
-type Question = { moduleId?: string; prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
+type Question = { moduleId?: string; prompt: string; options: string[]; correctAnswer?: string; skill?: string; difficulty?: string; diagram?: Diagram; questionId?: string };
 type Attempt = { teachingBefore?: Lesson; reasoningSound?: boolean | null; question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number; stage?: string };
-export type LearnerState = { returnStage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; draftProblem?: string; draftChoice?: string; draftReasoning?: string; draftFeedback?: string; draftTags?: string[]; problemImage?: ImageInput; awaitingContinue?: boolean; modules?: Module[]; teaching?: Lesson; gaps?: Gap[]; selectedFocus?: string; diagnosisSummary?: string; theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number;  feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
+export type LearnerState = { controllerToken?: string; returnStage?: 'diagnostic' | 'verification' | 'learning' | 'proof' | 'integration' | 'solution' | 'transfer' | 'repetition'; draftProblem?: string; draftChoice?: string; draftReasoning?: string; draftFeedback?: string; draftTags?: string[]; problemImage?: ImageInput; awaitingContinue?: boolean; modules?: Module[]; teaching?: Lesson; gaps?: Gap[]; selectedFocus?: string; diagnosisSummary?: string; theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'verification' | 'learning' | 'proof' | 'integration' | 'solution' | 'transfer' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number; feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question; readiness?: Record<string, {status:string;observations:number;soundObservations:number;objectives:string[]}>; remediation?: Record<string,{needed?:boolean;status?:string}>; integrationPlan?: Array<{id:string;prompt:string;concept?:string}>; integrationAccepted?: string[]; integrationWork?: Record<string,string>; integrationFeedback?: Record<string,string>; solutionUnlocked?: boolean; verifiedSolution?: {steps:Array<{math:string;explanation:string}>;commonMistakes?:string[];interpretations?:string[]}; transferExercises?: Record<string,string>; transferFeedback?: Record<string,string>; retrievalStarted?: boolean };
 type ImageInput = { mimeType: string; data: string; name: string; preview: string };
 type Gap = { skill: string; feedback: string; explanation: string; secure?: boolean };
 
@@ -57,7 +58,7 @@ function SequenceDiagram({ diagram }: { diagram: Diagram }) {
   return <div className="visualCard sequenceVisual"><svg viewBox="0 0 760 170" role="img" aria-label="Later sequence terms and the convergent subsequence approach the same limit"><rect x="315" y="28" width="415" height="87" rx="18" fill="#e9f2ed"/><line x1="35" y1="107" x2="728" y2="107" stroke="#a2aaa5" strokeWidth="2"/><line x1="286" y1="15" x2="286" y2="131" stroke="#438b77" strokeWidth="2" strokeDasharray="6 6"/><text x="277" y="14" fill="#438b77" fontSize="16">N</text>{[68,145,222,343,422,503,584,670].map((x,i)=><g key={x}><circle cx={x} cy="107" r="9" fill={x<286?'#a0aaa4':'#438b77'}/><text x={x-4} y="139" fill="#748079" fontSize="12">{i+1}</text></g>)}<circle cx="503" cy="107" r="20" fill="none" stroke="#29866f" strokeWidth="4"/><text x="497" y="65" fill="#29866f" fontSize="15">x</text></svg><p>{diagram.caption || 'A late term can be chosen close to the limit.'}</p></div>;
 }
 
-export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionId }: { initial: LearnerState; onSave: (state: LearnerState) => void; priorEvidence: unknown[]; phase: number; onPhase: (phase: number) => void; sessionId: string }) {
+export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionId, courseId }: { initial: LearnerState; onSave: (state: LearnerState) => void; priorEvidence: unknown[]; phase: number; onPhase: (phase: number) => void; sessionId: string; courseId: string }) {
   const currentTurnRef = useRef<HTMLDivElement>(null);
   const imageTask = useRef(0);
   const requestController = useRef<AbortController>();
@@ -105,11 +106,11 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
       const responseExplanation = cleanTutorText(output.explanation || '');
       const modules: Module[] = validModules(state.modules) && !start ? state.modules! : validModules(output.prerequisites) ? output.prerequisites : [];
       const teaching = validLesson(output.teaching) ? output.teaching : undefined;
-      const verdict = answer && question ? answer === question.correctAnswer : null;
+      const verdict = answer && question ? output.answerCorrect === true ? true : output.answerCorrect === false ? false : null : null;
       const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, teachingBefore: state.teaching, reasoningSound: typeof output.reasoningSound === 'boolean' ? output.reasoningSound : null, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
-      const diagnosticCount = start ? 0 : Math.min(10, (state.diagnosticsCount || 0) + (answer && stage === 'diagnostic' ? 1 : 0));
+      const diagnosticCount = Number.isInteger(output.diagnosticsCount) ? output.diagnosticsCount : (state.diagnosticsCount || 0);
       const completedDiagnosis = diagnosticCount >= 10;
-      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && modules.length > 0 && modules.every(m => moduleProgress(m, updatedHistory).ready)) ? 'proof' : stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
+      const nextStage = start ? 'diagnostic' : output.stage || stage;
       if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
       const gaps: Gap[] = start ? [] : [...(state.gaps || [])];
       if (question && answer && verdict === false) {
@@ -118,11 +119,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
         const index = gaps.findIndex(item => item.skill.toLowerCase() === skill.toLowerCase());
         if (index < 0) gaps.push(gap); else gaps[index] = gap;
       }
-      for (const gap of gaps) {
-        const evidence = updatedHistory.filter(item => item.question.skill?.toLowerCase() === gap.skill.toLowerCase());
-        if (correctStreak(evidence) >= 5) gap.secure = true;
-      }
-      setState({ problemImage: image || state.problemImage, modules, teaching, gaps, selectedFocus: focusSkill || state.selectedFocus, diagnosisSummary: stage === 'diagnostic' && nextStage === 'learning' ? (gaps.length ? 'These ideas need a little attention. Choose one to work on, or continue with the guided practice.' : 'Your answers show a good starting point. We’ll connect the ideas and build the full solution.') : state.diagnosisSummary, theorem: recognizedProblem, phase: nextStage === 'diagnostic' ? 'Step 1' : nextStage === 'proof' ? 'Step 3' : 'Step 2', stage: nextStage,
+      setState({ ...state, controllerToken: output.controllerToken || state.controllerToken, problemImage: image || state.problemImage, modules, teaching, gaps, readiness:output.readiness||state.readiness, remediation:output.remediation||state.remediation, solutionUnlocked:output.solutionUnlocked===true, selectedFocus: focusSkill || state.selectedFocus, diagnosisSummary: stage === 'diagnostic' && nextStage === 'learning' ? (gaps.length ? 'These ideas need a little attention. Choose one to work on, or continue with the guided practice.' : 'Your answers show a good starting point. We’ll connect the ideas and build the full solution.') : state.diagnosisSummary, theorem: recognizedProblem, phase: output.phase===2?'Step 1':output.phase===3?'Step 2':output.phase===4?'Step 3':nextStage === 'proof' ? 'Step 3' : output.phase===5?'Step 4':output.phase===6?'Step 5':'Step 2', stage: nextStage,
         learningPlan: output.learningPlan || { focus: cleanTutorText(output.diagnosedSkill || nextQuestion.skill || 'Your problem'), nextMove: 'Work on the idea that needs attention, then reconstruct the solution and revisit it later.' },
         currentQuestion: nextQuestion, lastQuestion: answer && question ? question : state.lastQuestion, history: updatedHistory,
         mode: !focusSkill && (repetition || state.mode === 'repetition') ? 'repetition' : 'guided', diagnosticsCount: diagnosticCount,
@@ -140,12 +137,14 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
     const question = start ? null : state.currentQuestion || null;
     const answer = start || focusSkill ? null : choice || null;
     const theorem = start ? problemText.trim() : state.theorem || '';
-    const pendingHistory = answer && question ? [...history, { question, isCorrect: answer === question.correctAnswer, reasoningSound: reasoning.trim() ? false : true }] : history;
+    const pendingHistory = history;
     const modules = validModules(state.modules) ? state.modules! : [];
     const currentModule = modules.find(m => m.id === question?.moduleId);
-    const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage === 'learning' && currentModule && !moduleProgress(currentModule, pendingHistory).ready ? currentModule : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
+      const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage === 'learning' && currentModule && !moduleProgress(currentModule, pendingHistory).ready ? currentModule : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
     const body = {
+      courseId,
       sessionId,
+      controllerToken: start ? undefined : state.controllerToken,
       coursePrior: priorEvidence, // Context only: never used to bypass diagnosis.
       prerequisites: start ? [] : modules,
       moduleProgress: modules.map(m => moduleProgress(m, pendingHistory)),
@@ -161,7 +160,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
       currentQuestion: question,
       answer,
       reasoning: answer ? reasoning : '',
-      history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
+        history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
       diagnosticsCount: start ? 0 : Math.min(10, state.diagnosticsCount || 0),
       consecutiveCorrect: start ? 0 : answer && question ? answer === question.correctAnswer ? Math.min(5, currentStreak + 1) : 0 : Math.min(5, currentStreak),
       learnerFeedback: start ? { tags: [], note: '' } : { tags: feedbackTags, note: feedbackNote },
@@ -173,7 +172,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
       try { output = await response.json(); } catch { throw new Error(response.status === 413 ? 'The image could not be accepted by the tutor server. Please crop it to the problem. The server may need its latest update deployed.' : `The tutor returned an unreadable response (${response.status}).`); }
       if (response.status === 413) throw new Error('Image upload is temporarily unavailable. Paste the problem text to continue.');
       if (!response.ok) throw new Error(output.error || `Tutor request failed (${response.status}).`);
-      if (!output.nextQuestion || typeof output.nextQuestion.prompt !== 'string' || !['A','B','C','D','E'].includes(output.nextQuestion.correctAnswer) || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5 || !output.nextQuestion.options.every((item: any) => typeof item === 'string') || new Set(output.nextQuestion.options.map((item: string) => item.trim().toLowerCase())).size !== 5) throw new Error('The tutor returned an incomplete question. Please try again.');
+      if (!output.nextQuestion || typeof output.nextQuestion.prompt !== 'string' || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5 || !output.nextQuestion.options.every((item: any) => typeof item === 'string') || new Set(output.nextQuestion.options.map((item: string) => item.trim().toLowerCase())).size !== 5 || typeof output.controllerToken !== 'string') throw new Error('The tutor returned an incomplete or unauthenticated question. Please try again.');
       if (start && image && !textOnly) {
         setProblemText(cleanTutorText(output.problem || theorem)); setPendingStart(output); setReviewProblem(true);
       } else acceptTutorOutput(output, start, theorem, question, answer, repetition, focusSkill);
@@ -191,6 +190,17 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
     if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
     setState(prev => ({ ...prev, returnStage: prev.stage === 'repetition' ? prev.returnStage : prev.stage, currentQuestion: question, lastQuestion: question, mode: 'repetition', stage: 'repetition', feedback: '', explanation: '', teaching: undefined, verdict: null, phase: 'Repetition' }));
     setChoice(''); setReasoning(''); setShowDiagram(false); setError(''); setShowNext(true);
+  }
+  async function beginRetrieval() {
+    if(!state.controllerToken){setError('Start or resume this problem before beginning retrieval.');return;}
+    setBusy(true);setError('');
+    try {
+      const output=await learningAction({action:'start-retrieval',courseId,sessionId,controllerToken:state.controllerToken});
+      const next=output.nextQuestion;
+      if(!next?.prompt||!Array.isArray(next.options)||next.options.length!==5)throw new Error('The tutor returned an incomplete retrieval question.');
+      setState(prev=>({...prev,...applyActionState(prev,output),currentQuestion:next,lastQuestion:next,mode:'repetition',stage:'repetition',retrievalStarted:true,returnStage:prev.mode==='repetition'?prev.returnStage:prev.stage,feedback:'',explanation:'',teaching:undefined,awaitingContinue:true}));
+      setChoice('');setReasoning('');setShowNext(true);
+    }catch(e:any){setError(e?.message||'Retrieval practice could not start.');}finally{setBusy(false);}
   }
   async function attachImage(file?: File) {
     if (!file) return;
@@ -239,7 +249,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
             {attempts > 0 && state.feedback && state.feedback !== history.at(-1)?.feedback && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p><MathText text={state.feedback} /></p><p className="explanationText"><MathText text={state.explanation} /></p></div></div>}
             {stage === 'learning' && (state.modules || []).length > 0 && <div className="topicChooser"><label htmlFor="topic-focus">Targeted topic</label><select id="topic-focus" disabled={busy} value={active.moduleId || ''} onChange={event => { const module = state.modules?.find(m => m.id === event.target.value); if (module) { setShowNext(true); void callTutor({ focusSkill: module.title }); } }}><option value="" disabled>Choose a prerequisite</option>{state.modules?.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}</select></div>}
             <div ref={currentTurnRef}>{state.teaching && <TeachingCard lesson={state.teaching} />}</div>
-            {state.feedback && history.length > 0 && !showNext && <div className="feedbackCheckpoint">{history.at(-1)?.stage === 'diagnostic' && history.at(-1)?.choice !== 'F' && history.at(-1)?.isCorrect === false && <div><p>Was this a silly mistake, or is the idea still unclear?</p><button className="button secondary" onClick={() => { setFeedbackNote('I think this was a silly mistake. Please verify the same skill with a fresh question.'); setFeedbackOpen(true); }}>Verify this skill</button></div>}<button className="button primary" onClick={() => setShowNext(true)}>Continue to the next question <ChevronRight size={16}/></button></div>}
+            {state.feedback && history.length > 0 && !showNext && <div className="feedbackCheckpoint">{stage === 'verification' && <p>A new question will check this idea before it is treated as a conceptual gap.</p>}<button className="button primary" onClick={() => setShowNext(true)}>Continue to the next question <ChevronRight size={16}/></button></div>}
             {(showNext || !history.length) && <div className="assistantMessage currentTurn" ><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
               <div className="questionMeta">{stage === 'diagnostic' && <span>Question {(state.diagnosticsCount || 0) + 1} / 10 · </span>}<span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'standard'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" disabled={busy} onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
               <div className="questionPrompt"><MathText text={active.prompt} /></div>
