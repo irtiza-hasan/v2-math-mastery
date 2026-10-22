@@ -80,7 +80,11 @@ try{
  const oversized=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'x'.repeat(5_800_001)}),env);
  assert.equal(oversized.status,413,'actual request bodies are capped even without Content-Length');
  const steady=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:Array.from({length:4},()=>({isCorrect:true,question:'Diagnostic question'}))}),env);
- assert.equal((await steady.json()).stage,'learning');
+ assert.equal((await steady.json()).stage,'diagnostic','five correct responses must not bypass ten-question diagnosis');
+ const priorCheck=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'A new problem',stage:'diagnostic',coursePrior:[{topic:'Cauchy condition',interpretation:{status:'Strong evidence',summary:'Prior sessions'},evidence:[{question:'Earlier question',correct:true}]}]}),env);
+ assert.equal((await priorCheck.json()).stage,'diagnostic');
+ assert.equal(lastTutorPayload.coursePrior[0].topic,'Cauchy condition');
+ assert.equal(lastTutorPayload.priorPolicy,'prior-informs-start-never-skips-diagnosis');
  const interrupted=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'diagnostic',diagnosticsCount:4,currentQuestion:question,answer:'A',history:[{isCorrect:true},{isCorrect:true},{isCorrect:false},{isCorrect:true}]}),env);
  assert.equal((await interrupted.json()).stage,'diagnostic');
  const focus=await handler.fetch(req('/tutor','http://localhost:5173',{theorem:'Lemma 3.18',stage:'learning',focusSkill:'Triangle inequality',diagnosticsCount:10}),env);

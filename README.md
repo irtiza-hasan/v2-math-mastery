@@ -1,28 +1,19 @@
-# Math Mastery Study Space
+# LLM-TA for Math Learning
 
-A browser-based mathematics practice site with a React, TypeScript, Vite, and KaTeX frontend; a Cloudflare Worker connects questions to Gemini. Learner progress is stored locally in the browser. There are no accounts.
+A course-based mathematics learning workspace built with React, TypeScript, Vite, KaTeX, and a Cloudflare Worker. Adaptive diagnosis and targeted practice support numerical, symbolic, and proof-based mathematics.
 
-## Local development
-
-```bash
-npm install
+```sh
+npm ci
 npm run dev
-```
-
-## Checks
-
-```bash
 npm run check
 npm test
 npm run build
 ```
 
-## Deployment
+Node 22 is required for the test suite. Set `VITE_API_URL` to your Worker URL; the existing deployed Worker remains the fallback. API credentials belong only in Worker secrets. The Worker continues to use the existing Gemini provider.
 
-GitHub Actions builds the frontend and deploys it to GitHub Pages when changes are pushed to `main`. The app uses the public Worker endpoint configured in `src/main.tsx`; set `VITE_API_URL` only if that endpoint changes.
+Create a course, start a mathematical problem, and return through Saved sessions. Progress is automatically saved **only in this browser**. Export a JSON backup from the header. There is no account, cloud synchronization, or automatic syllabus extraction. Storage failures are shown explicitly.
 
-The Worker source is in `worker/`. Deploy it with Wrangler from that directory. Keep `GEMINI_API_KEY` as a Cloudflare Worker secret and never add it to frontend files or GitHub. Configure `ALLOWED_ORIGIN` to the exact GitHub Pages origin.
+The supplied [design brief](docs/DESIGN_BRIEF.md) and [architecture / feature-status guide](docs/FRONTEND_ARCHITECTURE.md) explain the data model, evidence heuristics, existing functionality, backend contracts, limitations, and validation. Complete-solution verification and generated transfer exercises are future integration boundaries; the frontend currently provides clearly labeled student reconstruction and transfer journals.
 
-## Anonymous learner data
-
-Each browser creates an anonymous local learner profile. The **New learner** control creates another isolated profile on that device. Progress does not sync between browsers or devices.
+GitHub Pages still deploys only from `main`. Review this redesign on its feature branch before merging. Worker changes must be deployed separately after review; no production deployment is performed by this change.

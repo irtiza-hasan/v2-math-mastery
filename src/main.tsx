@@ -1,319 +1,35 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { parseMath } from './math';
-import { validModules, moduleProgress, nextModule, validLesson, type Module, type Lesson } from './learning';
-import { ArrowUp, BookOpen, Check, ChevronRight, LoaderCircle, Menu, Paperclip, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, Download, FolderOpen, GraduationCap, LayoutDashboard, Menu, Network, Plus, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { CourseDashboard } from './components/CourseDashboard';
+import { SessionList } from './components/SessionList';
+import { SkillMap } from './components/SkillMap';
+import { LearningWorkspace } from './components/LearningWorkspace';
+import { newSession, phases, recordLearner, skillState, uid, type Course, type LearningSession, type LearningStore } from './models';
+import { repository } from './repository';
 import 'katex/dist/katex.min.css';
 import './styles.css';
-
-type Diagram = { type: 'sequence' | 'numberLine' | 'mapping' | 'none'; caption: string; labels?: string[] };
-type Question = { moduleId?: string; prompt: string; options: string[]; correctAnswer: string; skill?: string; difficulty?: string; diagram?: Diagram };
-type Attempt = { teachingBefore?: Lesson; reasoningSound?: boolean | null; question: Question; choice: string; reasoning: string; feedback: string; explanation: string; isCorrect: boolean | null; time: number; stage?: string };
-type LearnerState = { modules?: Module[]; teaching?: Lesson; gaps?: Gap[]; selectedFocus?: string; diagnosisSummary?: string; theorem?: string; phase?: string; currentQuestion?: Question; stage?: 'diagnostic' | 'learning' | 'proof' | 'repetition'; learningPlan?: { focus: string; nextMove: string }; history?: Attempt[]; mode?: 'guided' | 'repetition'; diagnosticsCount?: number;  feedback?: string; explanation?: string; verdict?: boolean | null; diagnosedSkill?: string; difficulty?: string; lastQuestion?: Question };
-type ImageInput = { mimeType: string; data: string; name: string; preview: string };
-type Gap = { skill: string; feedback: string; explanation: string; secure?: boolean };
-
-const API_URL = (import.meta.env.VITE_API_URL || 'https://proofwise-api.irtiza-proofwise.workers.dev').replace(/\/$/, '');
-const ACTIVE_PROFILE_KEY = 'math-mastery-anonymous-profile';
-const profileKey = (id: string) => `math-mastery-progress-${id}`;
-
-function MathText({ text = '' }: { text?: string }) {
-  return <>{parseMath(text).map((part, index) => part.math === undefined ? <React.Fragment key={index}>{part.text}</React.Fragment> : <span key={index} className={part.block ? 'mathBlock' : 'mathInline'} dangerouslySetInnerHTML={{ __html: part.html! }} />)}</>;
-}
-function makeId() { return globalThis.crypto?.randomUUID?.() || `learner-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; }
-function getProfileId() {
-  try { const saved = localStorage.getItem(ACTIVE_PROFILE_KEY); if (saved) return saved; const id = makeId(); localStorage.setItem(ACTIVE_PROFILE_KEY, id); return id; }
-  catch { return 'temporary'; }
-}
-function loadState(id: string): LearnerState {
-  try {
-    const saved: LearnerState = JSON.parse(localStorage.getItem(profileKey(id)) || '{}');
-    if (!Array.isArray(saved.history)) saved.history = [];
-    if (!validModules(saved.modules)) saved.modules = [];
-    if (!validLesson(saved.teaching)) saved.teaching = undefined;
-    if (!Array.isArray(saved.gaps)) {
-      const gaps = new Map<string, Gap>();
-      for (const item of saved.history) if (item.isCorrect === false) {
-        const skill = item.question.skill || 'Problem reasoning';
-        gaps.set(skill.toLowerCase(), { skill, feedback: item.feedback, explanation: item.explanation });
-      }
-      saved.gaps = [...gaps.values()];
-    }
-    return saved;
-  } catch { return {}; }
-}
-function saveState(id: string, value: LearnerState) { try { localStorage.setItem(profileKey(id), JSON.stringify(value)); } catch { /* storage may be unavailable in private browsing */ } }
-function cleanTutorText(value = '') { return String(value).replace(/\b(?:Proofwise|Math Mastery)\b/gi, 'Virtual Adaptive Teaching Assistant').replace(/\bV2\b/gi, ''); }
-function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }
-function correctStreak(history: Attempt[]) { let count = 0; for (let i = history.length - 1; i >= 0 && history[i].isCorrect === true; i--) count++; return count; }
-function imageData(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('The image could not be opened.'));
-    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
-    reader.readAsDataURL(file);
-  });
-}
-async function prepareImage(file: File): Promise<File> {
-  if (file.size > 25 * 1024 * 1024) throw new Error('Please crop the screenshot to the problem, or use an image under 25 MB.');
-  const source = URL.createObjectURL(file);
-  try {
-    const picture = new Image(); picture.src = source;
-    await picture.decode();
-    if (!picture.naturalWidth || !picture.naturalHeight || picture.naturalWidth * picture.naturalHeight > 60_000_000) throw new Error('Please crop this image to the mathematical problem.');
-    const canvas = document.createElement('canvas');
-    let scale = Math.min(1, 2200 / Math.max(picture.naturalWidth, picture.naturalHeight));
-    for (let attempt = 0; attempt < 5; attempt++) {
-      canvas.width = Math.max(1, Math.round(picture.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(picture.naturalHeight * scale));
-      const context = canvas.getContext('2d'); if (!context) throw new Error('Image preparation is unavailable. Try pasting the problem text.');
-      context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(picture, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', Math.max(.65, .9 - attempt * .05)));
-      if (blob && blob.size <= 700_000) return new File([blob], 'problem-image.jpg', { type: 'image/jpeg' });
-      scale *= .82;
-    }
-    throw new Error('Please crop the screenshot to the problem so its symbols remain readable.');
-  } finally { URL.revokeObjectURL(source); }
-}
-
-function TeachingCard({ lesson }: { lesson: Lesson }) {
-  return <div className="teachingCard"><span className="messageLabel">UNDERSTAND THE IDEA</span><h3>{lesson.title}</h3><p><MathText text={lesson.concept} /></p><div className="workedExample"><strong>A worked example</strong><p><MathText text={lesson.workedExample} /></p></div><p className="lessonConnection"><strong>Back to your problem</strong><br /><MathText text={lesson.connection} /></p><span className="lessonNext">Now try the question below.</span></div>;
-}
-function SequenceDiagram({ diagram }: { diagram: Diagram }) {
-  if (diagram.type === 'none') return null;
-  if (diagram.type === 'numberLine') return <div className="visualCard"><div className="visualLine"><span className="visualInterval" /><span className="visualPoint left" /><span className="visualPoint center" /><span className="visualPoint right" /></div><div className="visualLabels"><span>{diagram.labels?.[0] || 'start'}</span><span>{diagram.labels?.[1] || 'middle'}</span><span>{diagram.labels?.[2] || 'target'}</span></div><p>{diagram.caption}</p></div>;
-  if (diagram.type === 'mapping') return <div className="visualCard mappingVisual"><div><span>{diagram.labels?.[0] || 'Input'}</span><b>x</b><b>y</b><b>z</b></div><svg viewBox="0 0 180 120" aria-hidden="true"><path d="M20 28 C90 25 88 31 150 31 M20 60 C90 58 89 62 150 60 M20 92 C92 88 90 48 150 60" fill="none" stroke="#438b77" strokeWidth="2" markerEnd="url(#arrow)"/><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#438b77" /></marker></defs></svg><div><span>{diagram.labels?.[1] || 'Output'}</span><b>f(x)</b><b>f(y)</b><b>f(z)</b></div><p>{diagram.caption}</p></div>;
-  return <div className="visualCard sequenceVisual"><div className="visualCaption">A useful picture for this step</div><svg viewBox="0 0 760 170" role="img" aria-label="Later sequence terms and the convergent subsequence approach the same limit"><rect x="315" y="28" width="415" height="87" rx="18" fill="#e9f2ed"/><line x1="35" y1="107" x2="728" y2="107" stroke="#a2aaa5" strokeWidth="2"/><line x1="286" y1="15" x2="286" y2="131" stroke="#438b77" strokeWidth="2" strokeDasharray="6 6"/><text x="277" y="14" fill="#438b77" fontSize="16">N</text>{[68,145,222,343,422,503,584,670].map((x,i)=><g key={x}><circle cx={x} cy="107" r="9" fill={x<286?'#a0aaa4':'#438b77'}/><text x={x-4} y="139" fill="#748079" fontSize="12">{i+1}</text></g>)}<circle cx="503" cy="107" r="20" fill="none" stroke="#29866f" strokeWidth="4"/><text x="497" y="65" fill="#29866f" fontSize="15">x</text></svg><p>{diagram.caption || 'A late term can be chosen close to the limit.'}</p></div>;
-}
-
+import './workspace.css';
 function App() {
-  const currentTurnRef = useRef<HTMLDivElement>(null);
-  const imageTask = useRef(0);
-  const [profileId, setProfileId] = useState(getProfileId);
-  const [state, setState] = useState<LearnerState>(() => loadState(getProfileId()));
-  const [problemText, setProblemText] = useState('');
-  const [image, setImage] = useState<ImageInput | null>(null);
-  const [choice, setChoice] = useState('');
-  const [reasoning, setReasoning] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [preparingImage, setPreparingImage] = useState(false);
-  const [reviewProblem, setReviewProblem] = useState(false);
-  const [pendingStart, setPendingStart] = useState<any>(null);
-  const [error, setError] = useState('');
-  const [mobileMenu, setMobileMenu] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [showDiagram, setShowDiagram] = useState(false);
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [feedbackTags, setFeedbackTags] = useState<string[]>([]);
-  const [feedbackNote, setFeedbackNote] = useState('');
-  const [showLearningPlan, setShowLearningPlan] = useState(false);
-
-  useEffect(() => { saveState(profileId, state); }, [profileId, state]);
-  useEffect(() => () => { if (image?.preview) URL.revokeObjectURL(image.preview); }, [image]);
-  const history = state.history || [];
-  const attempts = history.length;
-  const currentStreak = correctStreak(history);
-  const active = state.currentQuestion;
-  const stage = state.mode === 'repetition' ? 'repetition' : state.stage || (Math.min(10, state.diagnosticsCount || 0) >= 10 || stepFor(state.phase) > 1 ? 'learning' : 'diagnostic');
-  const currentStep = stage === 'repetition' ? 0 : stage === 'diagnostic' ? 1 : stage === 'proof' ? 3 : 2;
-  const recent = history.slice(-10);
-  const readiness = Math.min(1, currentStreak / 5);
-  const performance = recent.length ? recent.filter(item => item.isCorrect === true).length / recent.length : .5;
-  const barHue = currentStreak >= 5 ? 145 : recent.length ? 8 + 100 * performance : 220;
-  const barStyle = { width: `${attempts ? 18 + 82 * readiness : 12}%`, background: `hsl(${barHue} 45% 48%)` };
-  const momentum = !attempts ? 'Ready to begin' : currentStreak >= 5 ? 'Steady understanding' : performance < .5 ? 'Finding the missing link' : 'Understanding is growing';
-  useEffect(() => { if (history.length) currentTurnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [state.currentQuestion?.prompt, history.length]);
-  const repeatedQuestion = useMemo(() => [...history].reverse().find(item => item.isCorrect === false)?.question || history.at(-1)?.question || state.lastQuestion || active, [history, state.lastQuestion, active]);
-
-  function createNewLearner() {
-    const id = makeId();
-    try { localStorage.setItem(ACTIVE_PROFILE_KEY, id); } catch { /* continue in memory */ }
-    setProfileId(id); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowHistory(false); setShowDiagram(false); setFeedbackTags([]); setFeedbackNote(''); setFeedbackOpen(false); setShowLearningPlan(false); setReviewProblem(false); setPendingStart(null);
-  }
-  function chooseNewProblem() { setFeedbackTags([]); setFeedbackNote(''); setFeedbackOpen(false); setShowLearningPlan(false); setState({}); setProblemText(''); setImage(null); setChoice(''); setReasoning(''); setError(''); setShowDiagram(false); setReviewProblem(false); setPendingStart(null); }
-  function acceptTutorOutput(output: any, start: boolean, theorem: string, question: Question | null, answer: string | null, repetition: boolean, focusSkill = '') {
-      const recognizedProblem = cleanTutorText(output.problem || theorem);
-      if (!recognizedProblem.trim()) throw new Error('I could not read a clear problem from that image. Try a sharper photo or paste the problem text.');
-      const nextQuestion: Question = {
-        ...output.nextQuestion, prompt: cleanTutorText(output.nextQuestion.prompt),
-        options: output.nextQuestion.options.map((item: string) => cleanTutorText(item)),
-        skill: cleanTutorText(output.nextQuestion.skill || ''),
-        diagram: output.nextQuestion.diagram && typeof output.nextQuestion.diagram === 'object' ? output.nextQuestion.diagram : { type: 'none', caption: '' }
-      };
-      const responseFeedback = cleanTutorText(output.feedback || '');
-      const responseExplanation = cleanTutorText(output.explanation || '');
-      const modules: Module[] = validModules(state.modules) && !start ? state.modules! : validModules(output.prerequisites) ? output.prerequisites : [];
-      const teaching = validLesson(output.teaching) ? output.teaching : undefined;
-      const verdict = answer && question ? answer === question.correctAnswer : null;
-      const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, teachingBefore: state.teaching, reasoningSound: typeof output.reasoningSound === 'boolean' ? output.reasoningSound : null, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
-      const diagnosticCount = start ? 0 : Math.min(10, (state.diagnosticsCount || 0) + (answer && stage === 'diagnostic' ? 1 : 0));
-      const completedDiagnosis = diagnosticCount >= 10 || correctStreak(updatedHistory) >= 5;
-      const nextStage = start ? 'diagnostic' : focusSkill ? 'learning' : stage === 'repetition' ? 'repetition' : stage === 'proof' || (stage !== 'diagnostic' && modules.length > 0 && modules.every(m => moduleProgress(m, updatedHistory).ready)) ? 'proof' : stage === 'learning' || completedDiagnosis ? 'learning' : 'diagnostic';
-      if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
-      const gaps: Gap[] = start ? [] : [...(state.gaps || [])];
-      if (question && answer && verdict === false) {
-        const skill = cleanTutorText(question.skill || output.diagnosedSkill || 'Problem reasoning');
-        const gap = { skill, feedback: responseFeedback, explanation: responseExplanation, secure: false };
-        const index = gaps.findIndex(item => item.skill.toLowerCase() === skill.toLowerCase());
-        if (index < 0) gaps.push(gap); else gaps[index] = gap;
-      }
-      for (const gap of gaps) {
-        const evidence = updatedHistory.filter(item => item.question.skill?.toLowerCase() === gap.skill.toLowerCase());
-        if (correctStreak(evidence) >= 5) gap.secure = true;
-      }
-      setState({ modules, teaching, gaps, selectedFocus: focusSkill || state.selectedFocus, diagnosisSummary: stage === 'diagnostic' && nextStage === 'learning' ? (gaps.length ? 'These ideas need a little attention. Choose one to work on, or continue with the guided practice.' : 'Your answers show a good starting point. We’ll connect the ideas and build the full argument.') : state.diagnosisSummary, theorem: recognizedProblem, phase: nextStage === 'diagnostic' ? 'Step 1' : nextStage === 'proof' ? 'Step 3' : 'Step 2', stage: nextStage,
-        learningPlan: output.learningPlan || { focus: cleanTutorText(output.diagnosedSkill || nextQuestion.skill || 'Your problem'), nextMove: 'Work on the idea that needs attention, then reconstruct the proof and revisit it later.' },
-        currentQuestion: nextQuestion, lastQuestion: answer && question ? question : state.lastQuestion, history: updatedHistory,
-        mode: !focusSkill && (repetition || state.mode === 'repetition') ? 'repetition' : 'guided', diagnosticsCount: diagnosticCount,
-        feedback: responseFeedback, explanation: responseExplanation, verdict, diagnosedSkill: cleanTutorText(output.diagnosedSkill || ''), difficulty: nextQuestion.difficulty || output.difficulty || state.difficulty || 'standard'
-      });
-      if (start) { setProblemText(''); setImage(null); }
-      setChoice(''); setReasoning(''); setShowDiagram(false); setFeedbackTags([]); setFeedbackNote(''); setReviewProblem(false); setPendingStart(null);
-  }
-  async function callTutor({ start = false, repetition = false, textOnly = false, focusSkill = '' } = {}) {
-    setBusy(true); setError('');
-    const question = start ? null : state.currentQuestion || null;
-    const answer = start || focusSkill ? null : choice || null;
-    const theorem = start ? problemText.trim() : state.theorem || '';
-    const pendingHistory = answer && question ? [...history, { question, isCorrect: answer === question.correctAnswer, reasoningSound: reasoning.trim() ? false : true }] : history;
-    const modules = validModules(state.modules) ? state.modules! : [];
-    const currentModule = modules.find(m => m.id === question?.moduleId);
-    const target = focusSkill ? modules.find(m => m.title === focusSkill) : stage === 'learning' && currentModule && !moduleProgress(currentModule, pendingHistory).ready ? currentModule : stage !== 'repetition' ? nextModule(modules, pendingHistory) : undefined;
-    const body = {
-      prerequisites: start ? [] : modules,
-      moduleProgress: modules.map(m => moduleProgress(m, pendingHistory)),
-      selectedModule: start ? '' : target?.id || '',
-      lessonStart: Boolean(focusSkill),
-      theorem,
-      image: start && image && !textOnly ? { mimeType: image.mimeType, data: image.data } : undefined,
-      phase: start ? 'Step 1' : currentStep === 1 ? 'Step 1' : currentStep === 3 ? 'Step 3' : 'Step 2',
-      stage: start ? 'diagnostic' : focusSkill ? 'learning' : stage,
-      focusSkill,
-      mode: focusSkill ? 'guided' : repetition ? 'repetition' : state.mode || 'guided',
-      difficulty: state.difficulty || 'adaptive',
-      currentQuestion: question,
-      answer,
-      reasoning: answer ? reasoning : '',
-      history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
-      diagnosticsCount: start ? 0 : Math.min(10, state.diagnosticsCount || 0),
-      consecutiveCorrect: start ? 0 : answer && question ? answer === question.correctAnswer ? Math.min(5, currentStreak + 1) : 0 : Math.min(5, currentStreak),
-      learnerFeedback: start ? { tags: [], note: '' } : { tags: feedbackTags, note: feedbackNote },
-      diagramRequested: Boolean(showDiagram),
-    };
-    try {
-      const response = await fetch(`${API_URL}/tutor`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      let output: any;
-      try { output = await response.json(); } catch { throw new Error(response.status === 413 ? 'The image could not be accepted by the tutor server. Please crop it to the problem. The server may need its latest update deployed.' : `The tutor returned an unreadable response (${response.status}).`); }
-      if (response.status === 413) throw new Error('Image upload is temporarily unavailable. Paste the problem text to continue.');
-      if (!response.ok) throw new Error(output.error || `Tutor request failed (${response.status}).`);
-      if (!output.nextQuestion || typeof output.nextQuestion.prompt !== 'string' || !['A','B','C','D','E'].includes(output.nextQuestion.correctAnswer) || !Array.isArray(output.nextQuestion.options) || output.nextQuestion.options.length !== 5 || !output.nextQuestion.options.every((item: any) => typeof item === 'string') || new Set(output.nextQuestion.options.map((item: string) => item.trim().toLowerCase())).size !== 5) throw new Error('The tutor returned an incomplete question. Please try again.');
-      if (start && image && !textOnly) {
-        setProblemText(cleanTutorText(output.problem || theorem)); setPendingStart(output); setReviewProblem(true);
-      } else acceptTutorOutput(output, start, theorem, question, answer, repetition, focusSkill);
-    } catch (e: any) { setError(e?.message || 'Could not reach the tutor. Check your connection and try again.'); }
-    finally { setBusy(false); }
-  }
-  function beginLesson() {
-    if (!problemText.trim() && !image) { setError('Paste your problem here or attach a clear image of it.'); return; }
-    if (problemText.trim().length > 12000) { setError('Keep the problem text under 12,000 characters.'); return; }
-    setState({}); setChoice(''); setReasoning(''); setShowDiagram(false);
-    void callTutor({ start: true });
-  }
-  function enterRepetition(target?: Question) {
-    const question = target || repeatedQuestion;
-    if (!question) { setError('Answer a question first; then you can repeat it here.'); return; }
-    setState(prev => ({ ...prev, currentQuestion: question, lastQuestion: question, mode: 'repetition', stage: 'repetition', feedback: '', explanation: '', teaching: undefined, verdict: null, phase: 'Repetition' }));
-    setChoice(''); setReasoning(''); setShowDiagram(false); setError('');
-  }
-  async function attachImage(file?: File) {
-    if (!file) return;
-    if (!['image/jpeg','image/png','image/webp'].includes(file.type)) { setError('Use a JPG, PNG, or WebP image.'); return; }
-    const task = ++imageTask.current; setPreparingImage(true);
-    try { const prepared = await prepareImage(file); const data = await imageData(prepared); if (task !== imageTask.current) return; setImage({ mimeType: prepared.type, data, name: file.name || 'Pasted screenshot', preview: URL.createObjectURL(prepared) }); setReviewProblem(false); setPendingStart(null); setError(''); }
-    catch (e: any) { setError(e.message || 'Could not open that image.'); } finally { if (task === imageTask.current) setPreparingImage(false); }
-  }
-  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
-    if (busy || preparingImage) return;
-    const pastedImage = Array.from(event.clipboardData.items).find(item => item.type.startsWith('image/'))?.getAsFile();
-    if (pastedImage) { event.preventDefault(); void attachImage(pastedImage); }
-  }
-  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    if (busy || preparingImage) return;
-    const droppedImage = Array.from(event.dataTransfer.files).find(file => file.type.startsWith('image/'));
-    if (droppedImage) void attachImage(droppedImage);
-  }
-  const answerLabel = (item: Attempt) => item.choice === 'F' ? "I don't know yet" : item.question.options['ABCDE'.indexOf(item.choice)] || item.choice;
-
-  return <div className="app">
-    <aside className={`sidebar ${mobileMenu ? 'open' : ''}`}>
-      <div className="brand"><div className="brandmark"><BookOpen size={21} /></div><div><div className="brandtitle">VIRTUAL ADAPTIVE<br /><span>TEACHING ASSISTANT</span></div><div className="brandsub">PERSONAL STUDY SPACE</div></div><button className="mobileClose" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={18} /></button></div>
-      <div className="sidegroup"><div className="sidetitle">YOUR LEARNING PATH</div>
-        <div className="pathMeter"><div className="pathMeterTop"><span>Learning momentum</span></div><div className="pathMeterTrack" role="img" aria-label={momentum}><span style={barStyle} /></div><p className="momentumLabel">{momentum}</p></div>
-        {[1, 2, 3].map(step => <div className={`phase ${currentStep === step ? 'selected' : ''} ${currentStep > step ? 'completed' : ''}`} key={step}><div className="phase-index">{currentStep > step ? <Check size={14} /> : step}</div><span>Step {step}</span><i /></div>)}
-        <button className={`repetitionLink ${state.mode === 'repetition' ? 'selected' : ''}`} disabled={busy || (!active && !history.length)} onClick={() => state.mode === 'repetition' ? setState(prev => ({ ...prev, mode: 'guided', stage: 'learning', phase: 'Step 2' })) : enterRepetition()}><RotateCcw size={16} /> REPITITION MODE</button>
-      </div>
-      <button className="historyNav" onClick={() => { setShowHistory(!showHistory); setMobileMenu(false); }} disabled={!history.length}>Review your questions</button><div className="sidebarFoot"><ShieldCheck size={17} /><span>Your learning history stays in this browser.</span></div>
-    </aside>
-
-    <main className="main">
-      <header className="topbar"><button className="menuButton" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Open menu"><Menu size={21} /></button><div className="crumb">Study space <ChevronRight size={15} /> <span>{state.theorem ? 'Current problem' : 'Start with your problem'}</span></div><div className="topright"><span className="localBadge"><span className="liveDot" /> Anonymous session</span><button className="newLearner" disabled={busy || preparingImage} onClick={createNewLearner}>New learner</button></div></header>
-      <div className={`content ${active ? `chatContent ${stage !== 'diagnostic' ? 'hasLearningPanel' : ''}` : 'startContent'}`}>
-        {!active && !state.theorem && <section className="welcomeChat">
-          <div className="welcomeMark"><BookOpen size={24} /></div><div className="eyebrow"><span className="eyedot" /> YOUR PERSONAL LEARNING SPACE</div>
-          <h1>{reviewProblem ? <>Does this match<br /> your problem?</> : <>What would you like<br /> to understand?</>}</h1>
-          <p className="intro">{reviewProblem ? 'Check the symbols below. You can edit anything before we begin.' : 'Paste your problem or drop in a screenshot. We’ll take it one clear step at a time.'}</p>
-          <div className="composer startComposer" onPaste={handlePaste} onDragOver={event => event.preventDefault()} onDrop={handleDrop}>
-            <textarea aria-label="Math problem" rows={4} placeholder="Paste a theorem, exercise, or proof question…" value={problemText} onChange={e => { setProblemText(e.target.value); setPendingStart(null); setError(''); }} disabled={busy} />
-            {reviewProblem && <div className="transcriptionPreview"><span className="bubbleLabel">EXTRACTED PROBLEM · EDIT ABOVE IF NEEDED</span><MathText text={problemText} /></div>}
-            {image && <div className="imageAttachment"><img src={image.preview} alt="Selected problem" /><span>{image.name}</span><button aria-label="Remove image" onClick={() => { URL.revokeObjectURL(image.preview); setImage(null); }}><X size={16} /></button></div>}
-            <div className="composerActions"><label className="attachButton"><Paperclip size={19} /><span>Upload image</span><input disabled={busy || preparingImage} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => void attachImage(e.target.files?.[0])} /></label><span className="inputHint">No account needed</span><button className="sendButton" onClick={() => reviewProblem && pendingStart ? acceptTutorOutput(pendingStart, true, problemText, null, null, false) : reviewProblem ? void callTutor({ start: true, textOnly: true }) : beginLesson()} disabled={busy || preparingImage || (!problemText.trim() && !image)} aria-label="Begin with this problem">{busy || preparingImage ? <LoaderCircle size={19} className="spin" /> : <ArrowUp size={21} />}</button></div>
-          </div>
-          <div className="pasteHint"><span>{preparingImage ? 'Preparing image…' : reviewProblem ? 'Ready when you are' : 'Tip'}</span> Paste a screenshot with <kbd>⌘ V</kbd> / <kbd>Ctrl V</kbd>, or drag it into the box.</div>
-          {error && <div className="error" role="alert">{error}</div>}
-          <p className="privacyHint"><ShieldCheck size={15} /> Your progress is saved only in this browser.</p>
-        </section>}
-
-        {active && <>
-          <div className="activeTop"><div><div className="eyebrow"><span className="eyedot" /> {state.mode === 'repetition' ? 'REPITITION MODE' : `STEP ${currentStep}`}</div><h1 className="activeTitle">Let’s work through it.</h1></div><button className="button secondary changeProblem" disabled={busy} onClick={chooseNewProblem}>New problem</button></div>
-          <section className="chatThread" aria-label="Tutoring conversation">
-            <div className="learningStatus"><strong>{stage === 'diagnostic' ? 'Let’s find your starting point' : stage === 'repetition' ? 'Revisit and remember' : stage === 'proof' ? 'Put the proof together' : 'Your targeted learning has begun'}</strong><p>{stage === 'diagnostic' ? 'A few focused questions, then explanations and practice shaped around your answers.' : state.learningPlan?.nextMove || 'Work on the ideas you need, build the proof, then revisit it for retention.'}</p>{stage !== 'diagnostic' && state.learningPlan?.focus && <span>Focus: {state.learningPlan.focus}</span>}</div>
-            <div className="userBubble problemBubble"><span className="bubbleLabel">YOUR PROBLEM</span><div><MathText text={state.theorem || ''} /></div></div>
-            {state.feedback && attempts === 0 && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">LET’S BEGIN</div><p><MathText text={state.feedback} /></p>{state.explanation && <p className="explanationText"><MathText text={state.explanation} /></p>}</div></div>}
-            {history.map((item, index) => <React.Fragment key={`${item.time}-${index}`}>
-              {item.teachingBefore && <TeachingCard lesson={item.teachingBefore} />}
-              <div className="assistantMessage pastQuestion"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><div className="messageLabel">QUESTION</div><div className="questionPrompt"><MathText text={item.question.prompt} /></div><details className="pastOptions"><summary>View choices</summary>{item.question.options.map((option, optionIndex) => <p key={optionIndex}><strong>{'ABCDE'[optionIndex]}.</strong> <MathText text={option.replace(/^[A-E][.):]\s*/, '')} /></p>)}</details></div></div>
-              <div className="userBubble answerBubble"><span className="bubbleLabel">YOUR ANSWER</span><p><MathText text={answerLabel(item)} /></p>{item.reasoning && <p className="answerReasoning">{item.reasoning}</p>}</div>
-              <div className="assistantMessage"><div className={`assistantMark ${item.isCorrect ? 'markCorrect' : item.isCorrect === false ? 'markReview' : ''}`}>{item.isCorrect ? <Check size={17} /> : <BookOpen size={17} />}</div><div className={`assistantBubble ${item.isCorrect === false ? 'reviewBubble' : item.isCorrect ? 'correctBubble' : ''}`}><div className="messageLabel">{item.isCorrect ? 'CORRECT' : item.isCorrect === false ? 'LET’S REVIEW THIS' : 'TUTOR'}</div><p><MathText text={item.feedback} /></p>{item.explanation && <p className="explanationText"><MathText text={item.explanation} /></p>}<button className="inlineRepeat" disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div></div>
-            </React.Fragment>)}
-
-            {attempts > 0 && state.feedback && state.feedback !== history.at(-1)?.feedback && <div className="assistantMessage"><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble"><p><MathText text={state.feedback} /></p><p className="explanationText"><MathText text={state.explanation} /></p></div></div>}
-            <div ref={currentTurnRef}>{state.teaching && <TeachingCard lesson={state.teaching} />}</div>
-            {<div className="assistantMessage currentTurn" ><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
-              <div className="questionMeta"><span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'finding your pace'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" disabled={busy} onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
-              <div className="questionPrompt"><MathText text={active.prompt} /></div>
-              {active.diagram?.type && active.diagram.type !== 'none' && <><button className="visualToggle" onClick={() => setShowDiagram(!showDiagram)}>{showDiagram ? 'Hide visual' : 'Show a visual'} <ChevronRight size={15} className={showDiagram ? 'chevronOpen' : ''} /></button>{showDiagram && <SequenceDiagram diagram={active.diagram} />}</>}
-              <div className="options" role="radiogroup" aria-label="Choose one answer">{(active.options || []).map((option, index) => <button key={`${index}-${option}`} className={`option ${choice === 'ABCDE'[index] ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'ABCDE'[index]} onClick={() => setChoice('ABCDE'[index])} disabled={busy}><span className="optionLetter">{'ABCDE'[index]}</span><span className="optionText"><MathText text={option.replace(/^[A-E][.):]\s*/, '')} /></span><span className="optionRadio" /></button>)}<button className={`option unknown ${choice === 'F' ? 'chosen' : ''}`} role="radio" aria-checked={choice === 'F'} onClick={() => setChoice('F')} disabled={busy}><span className="optionLetter">F</span><span className="optionText">I don't know yet</span><span className="optionRadio" /></button></div>
-              <label className="reasoningLabel" htmlFor="reason">Optional reasoning</label><textarea id="reason" className="reasonField" rows={2} value={reasoning} onChange={e => setReasoning(e.target.value)} placeholder="Add a thought if you’d like, or leave this blank." disabled={busy} />
-              <div className="submitBar"><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help{feedbackTags.length || feedbackNote ? ' · saved' : ' (optional)'}</button><button className="button primary" disabled={busy || !choice} onClick={() => void callTutor()}>{busy ? 'Checking…' : 'Send answer'} {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
-            </div></div>}
-            {error && <div className="error" role="alert">{error}</div>}
-          </section>
-          {stage !== 'diagnostic' && <aside className="learningPanel" aria-label="Prerequisite learning map"><div className="panelHeading">YOUR LEARNING MAP</div><h2>Ideas to work on</h2><p>Choose a topic for an explanation and practice. Each topic keeps its own learning history.</p>
-            {!(state.modules || []).length && <p className="mapNotice">The tutor server needs its latest update to build the full prerequisite map. Your saved feedback is below.</p>}
-            <div className="moduleMap">{(state.modules || []).map(module => { const progress = moduleProgress(module, history); const selected = active.moduleId === module.id; return <div className={`moduleNode ${progress.status} ${selected ? 'moduleSelected' : ''}`} key={module.id}>
-              {module.dependsOn.length > 0 && <div className="moduleDependencies">Builds on {module.dependsOn.map(id => <button key={id} disabled={busy} onClick={() => void callTutor({ focusSkill: state.modules!.find(m => m.id === id)!.title })}>{state.modules!.find(m => m.id === id)!.title}</button>)}</div>}
-              <button className="moduleStart" disabled={busy} aria-pressed={selected} onClick={() => void callTutor({ focusSkill: module.title })}><span className="moduleStatus">{progress.label}</span><strong>{module.title}</strong><span>{module.purpose}</span><div className="moduleStrength" role="img" aria-label={progress.label}><i style={{ width: `${12 + 88 * progress.strength}%` }} /></div><span className="moduleAction">{selected ? 'Continue this topic' : progress.ready ? 'Revisit this topic' : 'Learn & practise'} <ChevronRight size={15} /></span></button>
-              {history.filter(item => item.question.moduleId === module.id || item.question.skill === module.title).length > 0 && <details><summary>Feedback & learning gaps</summary>{history.filter(item => item.question.moduleId === module.id || item.question.skill === module.title).slice(-3).map((item,index) => <p key={index}><MathText text={item.feedback} /></p>)}</details>}
-            </div>; })}</div>
-            {!(state.modules || []).length && <div className="gapList">{(state.gaps || []).map(gap => <div className="gapCard" key={gap.skill}><strong>{gap.skill}</strong><p><MathText text={gap.feedback} /></p></div>)}</div>}
-            <details className="diagnosticNotes"><summary>Feedback from your check-in</summary>{history.filter(item => !item.stage || item.stage === 'diagnostic').map((item,index) => <div key={index}><strong>{item.question.skill || 'Problem reasoning'}</strong><p><MathText text={item.feedback} /></p>{item.reasoning && <p>Your reasoning: {item.reasoning}</p>}</div>)}</details><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Tell me what would help</button><p className="panelFoot">Color shows learning evidence, not a score. You can revisit any topic.</p></aside>}
-          {showHistory && <div className="historyCard"><strong>Answered questions</strong>{[...history].reverse().map((item, index) => <div className="historyItem" key={`${item.time}-${index}`}><p><MathText text={item.question.prompt} /></p><button disabled={busy} onClick={() => enterRepetition(item.question)}><RotateCcw size={14} /> Repeat this question</button></div>)}</div>}
-          <footer>Practice stays in this browser. No account is required.</footer>
-        </>}
-      </div>
-    </main>
-    {(feedbackOpen || showLearningPlan) && <div className="dialogBackdrop" onClick={() => { setFeedbackOpen(false); setShowLearningPlan(false); }}><section className="studentDialog" role="dialog" aria-modal="true" aria-label={showLearningPlan ? 'Your learning plan' : 'Tell me what would help'} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === 'Escape') { setFeedbackOpen(false); setShowLearningPlan(false); } if (event.key === 'Tab') { const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button, textarea')); const first = controls[0]; const last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } } }}><button className="dialogClose" aria-label="Close popup" onClick={() => { setFeedbackOpen(false); setShowLearningPlan(false); }}><X size={20} /></button>{showLearningPlan ? <><h2>Let’s start learning.</h2><p>We have enough to begin. Your next questions focus on the ideas you need for this problem.</p><div className="planFocus"><strong>{state.learningPlan?.focus}</strong><p>{state.learningPlan?.nextMove}</p></div><p>Targeted practice → build the proof → revisit and remember.</p><button className="button primary" autoFocus onClick={() => setShowLearningPlan(false)}>Start learning</button></> : <><h2>What would help?</h2><p>Choose any that fit, write a note, or just close this. This is feedback, not a quiz.</p><div className="feedbackChips">{['A simpler explanation', 'An example', 'A useful diagram', 'A hint', 'More challenge', 'I’m ready to move on'].map(tag => <button key={tag} aria-pressed={feedbackTags.includes(tag)} className={feedbackTags.includes(tag) ? 'selected' : ''} onClick={() => setFeedbackTags(prev => prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag])}>{tag}</button>)}</div><textarea aria-label="Feedback note" value={feedbackNote} maxLength={2000} onChange={event => setFeedbackNote(event.target.value)} placeholder="Anything else? (optional)" /><p className="dialogHint">Your feedback will guide the next tutor response.</p><button className="button primary" autoFocus onClick={() => setFeedbackOpen(false)}>Done</button></>}</section></div>}
-  </div>;
+ const [boot]=useState(()=>{try{return {data:repository.load(),error:''};}catch(e){return {data:{version:1,revision:0,courses:[],sessions:[],skills:[],evidence:[]} as LearningStore,error:(e as Error).message};}});
+ const [loadError]=useState(boot.error);
+ const [store,setStore]=useState<LearningStore>(boot.data);
+ const [saveError,setSaveError]=useState(''),[saved,setSaved]=useState(false),[courseId,setCourseId]=useState(''),[sessionId,setSessionId]=useState(''),[page,setPage]=useState<'courses'|'sessions'|'skills'|'review'>('courses'),[sidebar,setSidebar]=useState(true),[mobile,setMobile]=useState(false),[rename,setRename]=useState(false),[courseName,setCourseName]=useState('');
+ const storeRef=useRef(store);storeRef.current=store;
+ useEffect(()=>{if(loadError)return;try{repository.save(store);setSaveError('');setSaved(true);}catch(e){setSaveError(`Your latest changes are in memory only. ${(e as Error).message}`);setSaved(false);}},[store,loadError]);
+ useEffect(()=>{const listener=(e:StorageEvent)=>{if(e.key==='llm-ta-courses-v1'){setSaveError('Another tab changed your learning data. Export this tab’s work and reload before continuing.');setSaved(false);}};window.addEventListener('storage',listener);return()=>window.removeEventListener('storage',listener);},[]);
+ function update(fn:(s:LearningStore)=>LearningStore){setSaved(false);setStore(s=>({...fn(s),revision:s.revision+1}));}
+ const course=store.courses.find(c=>c.id===courseId), session=store.sessions.find(s=>s.id===sessionId), sessions=store.sessions.filter(s=>s.courseId===courseId);
+ function openCourse(id:string){setCourseId(id);setSessionId('');setPage('sessions');setMobile(false);}
+ function openSession(id:string){const s=storeRef.current.sessions.find(s=>s.id===id);if(!s)return;setCourseId(s.courseId);setSessionId(id);setPage('sessions');setMobile(false);}
+ function createCourse(input:Omit<Course,'id'|'createdAt'>){const c={...input,id:uid(),createdAt:Date.now()};update(s=>({...s,courses:[...s.courses,c]}));openCourse(c.id);}
+ function createProblem(){if(!course)return;const problem=newSession(course.id);update(s=>({...s,sessions:[...s.sessions,problem]}));setSessionId(problem.id);setPage('sessions');setMobile(false);}
+ function patchSession(id:string,patch:Partial<LearningSession>){update(s=>({...s,sessions:s.sessions.map(session=>session.id===id?{...session,...patch,updatedAt:Date.now()}:session)}));}
+ function exportData(){const a=document.createElement('a');const url=URL.createObjectURL(new Blob([JSON.stringify(storeRef.current,null,2)],{type:'application/json'}));a.href=url;a.download=`llm-ta-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);}
+ return <div className={`learningApp ${!sidebar?'navCollapsed':''}`}><a className="skipLink" href="#main-content">Skip to learning workspace</a><aside className={`courseSidebar ${mobile?'mobileOpen':''}`}><button className="productBrand" onClick={()=>{setPage('courses');setSessionId('');setMobile(false);}}><span className="productMark"><GraduationCap size={24}/></span><span><strong>LLM-TA</strong><small>for Math Learning</small></span></button><button className="mobileDismiss" aria-label="Close navigation" onClick={()=>setMobile(false)}><X size={19}/></button><div className="navContent"><button className={`navItem ${page==='courses'?'active':''}`} onClick={()=>{setPage('courses');setSessionId('');setMobile(false);}}><LayoutDashboard size={18}/>My courses</button>{course&&<><div className="courseSwitcher"><span className="tinyLabel">CURRENT COURSE</span><label><select aria-label="Current course" value={course.id} onChange={e=>openCourse(e.target.value)}>{store.courses.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select><ChevronDown size={15}/></label></div><button className="newProblemButton" onClick={createProblem}><Plus size={17}/>New mathematical problem</button><button className={`navItem ${page==='sessions'&&!session?'active':''}`} onClick={()=>{setSessionId('');setPage('sessions');setMobile(false);}}><FolderOpen size={18}/>Saved sessions<span>{sessions.filter(s=>!s.archived).length}</span></button><button className={`navItem ${page==='skills'?'active':''}`} onClick={()=>{setSessionId('');setPage('skills');setMobile(false);}}><Network size={18}/>My skills</button><button className={`navItem ${page==='review'?'active':''}`} onClick={()=>{setSessionId('');setPage('review');setMobile(false);}}><RotateCcw size={18}/>Review practice</button>{session?<div className="phaseNav"><span className="tinyLabel">THIS PROBLEM’S LEARNING PATH</span>{phases.map((name,index)=><button key={name} className={session.phase===index?'current':''} onClick={()=>{patchSession(session.id,{phase:index});setMobile(false);}}><span>{index}</span><div>{name}{index===session.phase&&<small>Currently viewing</small>}</div></button>)}</div>:<div className="recentNav"><span className="tinyLabel">RECENT SESSIONS</span>{sessions.filter(s=>!s.archived).sort((a,b)=>b.updatedAt-a.updatedAt).slice(0,4).map(s=><button key={s.id} onClick={()=>openSession(s.id)}><span/> {s.title}</button>)}{!sessions.length&&<p>Your first problem will appear here.</p>}</div>}</>}</div><div className="navFooter"><ShieldCheck size={17}/><span>Saved on this device<small>Browser storage · no cloud sync</small></span></div></aside>{mobile&&<button className="navScrim" aria-label="Close navigation" onClick={()=>setMobile(false)}/>}
+ <div className="appBody"><header className="appHeader"><div><button className="quiet navToggle" aria-label={sidebar?'Collapse navigation':'Expand navigation'} onClick={()=>{setSidebar(!sidebar);setMobile(!mobile);}}><Menu size={19}/></button><button className="breadcrumb" onClick={()=>{setPage('courses');setSessionId('');}}>My courses</button>{course&&page!=='courses'&&<><ChevronRight size={14}/><button className="breadcrumb" onClick={()=>openCourse(course.id)}>{course.name}</button></>}{session&&<><ChevronRight size={14}/><span className="crumbCurrent">Learning workspace</span></>}</div><div className="headerActions"><span className={`saveState ${saveError?'saveFailed':''}`} role="status"><span/>{saveError?'Not saved':saved?'Saved in this browser':'Saving…'}</span><button className="iconAction" onClick={exportData} aria-label="Export learning backup" title="Export learning backup"><Download size={17}/></button><span className="avatar" aria-label="Local learner">L</span></div></header>
+ <main id="main-content" className={session?'workspaceMain':'pageMain'}>{(saveError||loadError)&&<div className="storageError" role="alert">{loadError||saveError}<button onClick={exportData}>Export current work</button></div>}
+ {page==='courses'?<CourseDashboard store={store} onOpen={openCourse} onResume={openSession} onCreate={createCourse}/>:session?<LearningWorkspace key={session.id} session={session} store={store} patch={patch=>patchSession(session.id,patch)} saveLearner={learner=>{const current=storeRef.current.sessions.find(s=>s.id===session.id);if(current&&JSON.stringify(current.learner)!==JSON.stringify(learner))update(s=>recordLearner(s,session.id,learner));}}/>:page==='skills'&&course?<SkillMap store={store} courseId={course.id} onSession={openSession}/>:page==='review'&&course?<><div className="sectionHeading"><div><span className="kicker">RETURN. RETRIEVE. RECONNECT.</span><h1>Make room for review.</h1><p>Review suggestions are based on response history and time, not measured forgetting.</p></div></div><div className="reviewGrid">{store.skills.filter(s=>s.courseId===course.id).map(skill=>{const evidence=store.evidence.filter(e=>e.skillId===skill.id),state=skillState(evidence);return <article className="panel" key={skill.id}><span className="statusPill">{state.status}</span><h2>{skill.name}</h2><p>{state.summary}</p><button className="textButton" disabled={!evidence.length} onClick={()=>{const target=evidence.at(-1)?.sessionId; if(target){const s=store.sessions.find(s=>s.id===target)!;patchSession(target,{phase:6});openSession(target);}}}>Open retrieval & transfer →</button></article>;})}</div>{!store.skills.some(s=>s.courseId===course.id)&&<div className="emptyState"><h3>Your review queue will grow with your learning.</h3><p>Start a problem and build some evidence first.</p></div>}</>:course?<><div className="sectionHeading"><div><span className="kicker">YOUR COURSE WORKSPACE</span>{rename?<form onSubmit={e=>{e.preventDefault();if(courseName.trim())update(s=>({...s,courses:s.courses.map(c=>c.id===course.id?{...c,name:courseName.trim()}:c)}));setRename(false);}}><input autoFocus aria-label="Course name" value={courseName} maxLength={100} onChange={e=>setCourseName(e.target.value)}/><button className="textButton">Save</button><button type="button" className="textButton" onClick={()=>setRename(false)}>Cancel</button></form>:<h1>{course.name} <button className="textButton" onClick={()=>{setCourseName(course.name);setRename(true);}}>Rename</button></h1>}<p>{course.description||'A space to work through mathematics, one problem at a time.'}</p>{course.syllabus&&<a className="syllabusLink" href={course.syllabus.dataUrl} download={course.syllabus.name}>Syllabus: {course.syllabus.name}</a>}</div><button className="cta" onClick={createProblem}><Plus size={17}/>New mathematical problem</button></div><div className="courseBanner"><BookOpen size={25}/><div><strong>Understanding has a history.</strong><p>Every problem saves its own path. Your course connects the evidence.</p></div><button className="textButton" onClick={()=>setPage('skills')}>Explore my skills →</button></div><h2 className="savedHeading">Your saved sessions</h2><SessionList sessions={sessions} onOpen={openSession} onChange={patchSession} onDelete={id=>update(s=>({...s,sessions:s.sessions.filter(x=>x.id!==id),evidence:s.evidence.filter(e=>e.sessionId!==id)}))}/></>:null}
+ {!session&&<footer className="pageFooter"><span>LLM-TA for Math Learning</span><span>Designed for understanding.</span></footer>}</main></div></div>;
 }
-
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(<App/>);
