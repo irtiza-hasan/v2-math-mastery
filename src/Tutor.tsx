@@ -110,7 +110,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
       const updatedHistory: Attempt[] = start ? [] : answer && question ? [...history, { question, teachingBefore: state.teaching, reasoningSound: typeof output.reasoningSound === 'boolean' ? output.reasoningSound : null, choice: answer, reasoning, feedback: responseFeedback, explanation: responseExplanation, isCorrect: verdict, time: Date.now(), stage }] : history;
       const diagnosticCount = Number.isInteger(output.diagnosticsCount) ? output.diagnosticsCount : (state.diagnosticsCount || 0);
       const completedDiagnosis = diagnosticCount >= 10;
-      const nextStage = start ? 'diagnostic' : output.stage || stage;
+      const nextStage = start ? 'diagnostic' : output.stage === 'training' ? 'learning' : output.stage || stage;
       if (stage === 'diagnostic' && nextStage === 'learning') setShowLearningPlan(true);
       const gaps: Gap[] = start ? [] : [...(state.gaps || [])];
       if (question && answer && verdict === false) {
