@@ -38,3 +38,9 @@ memory.clear();memory.set('math-mastery-anonymous-profile','old');memory.set('ma
 const migrated=repository.load();assert.equal(migrated.sessions[0].learner.theorem,'Original problem');assert(memory.has('math-mastery-progress-old'),'legacy original remains untouched');
 repository.save({...migrated,revision:3});assert.throws(()=>repository.save({...migrated,revision:2}),/Another tab/);
 console.log('PASS: multi-course persistence, draft resume, evidence deduplication, skill identity, uncertainty, review, migration, and stale-write protection');
+const latexTitle=String.raw`Study a very long mathematical problem whose final condition is $x_n\to x$ and prove convergence.`;
+const titled=recordLearner({...original,courses:[course],sessions:[session]},session.id,{theorem:latexTitle});
+assert.equal(titled.sessions[0].title,latexTitle,'automatic titles must never cut through a LaTeX delimiter');
+const reviewed={...titled.sessions[0],phase:6,learner:{...titled.sessions[0].learner,mode:'repetition',returnStage:'diagnostic',currentQuestion:history[0].question,stage:'repetition'}};
+const resumed=recordLearner({...titled,sessions:[reviewed]},session.id,{...reviewed.learner,mode:'guided',stage:'diagnostic'});
+assert.equal(resumed.sessions[0].phase,2,'leaving retrieval restores the guided workspace');

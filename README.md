@@ -17,3 +17,5 @@ Create a course, start a mathematical problem, and return through Saved sessions
 The supplied [design brief](docs/DESIGN_BRIEF.md) and [architecture / feature-status guide](docs/FRONTEND_ARCHITECTURE.md) explain the data model, evidence heuristics, existing functionality, backend contracts, limitations, and validation. Complete-solution verification and generated transfer exercises are future integration boundaries; the frontend currently provides clearly labeled student reconstruction and transfer journals.
 
 GitHub Pages still deploys only from `main`. Review this redesign on its feature branch before merging. Worker changes must be deployed separately after review; no production deployment is performed by this change.
+
+For isolated local UI verification, run `VITE_API_URL=/__qa npm run dev:qa` and use a dedicated QA course. This explicitly selected test server returns mock tutor responses; normal `npm run dev` and production builds retain the existing provider. `/tests/responsive.html` is a 390px development-only preview. See the architecture guide for verified behavior and remaining limits.
