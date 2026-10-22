@@ -4,10 +4,10 @@ The Cloudflare Worker owns progression decisions. `/tutor` creates a session, gr
 
 ## Current deterministic rules
 
-- A session starts at Phase 2 with one active audited diagnostic question. At least ten diagnostic answers are recorded before Phase 3; a wrong answer triggers a fresh same-skill verification question. `F` is stored as uncertainty and is not graded as incorrect.
+- Session creation records Phase 0 orientation and Phase 1 prerequisite mapping before entering Phase 2 with one active audited diagnostic question. At least ten diagnostic answers are recorded before Phase 3; a wrong answer triggers a fresh same-skill verification question. `F` is stored as uncertainty and is not graded as incorrect.
 - Diagnostic mistakes are never erased. Verification distinguishes a possible accidental error (fresh response correct with sound reasoning), uncertainty, and a conceptual gap. Unresolved conceptual gaps are practiced in Phase 3.
 - A prerequisite is considered ready after five sound, correct responses across at least three assessment types. This is a provisional controller policy, not a rule recovered from the authoritative updated tutoring prompt. Replace it when that specification is supplied.
-- Integration uses an independently audited step plan. Each student step is evaluated and independently checked; only accepted step IDs count. A complete, independently audited solution is returned only after all plan steps are accepted.
+- Integration uses an independently audited ordered step plan. Only the first unaccepted step can be evaluated; each student step is independently checked. A complete, independently audited solution is returned only after all plan steps are accepted.
 - Transfer items and evaluations are independently checked before their state is recorded. Retrieval starts with an audited question and does not overwrite the original learning history.
 - Question answer keys remain inside the encrypted token and are removed from API responses. Course/session IDs are bound to each token; the prerequisite map is taken from trusted state after session creation.
 

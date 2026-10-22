@@ -5,6 +5,7 @@ const json=(value,status=200,cors={})=>new Response(JSON.stringify(value),{statu
 const TYPES={
  plan:{type:'OBJECT',properties:{steps:{type:'ARRAY',items:{type:'OBJECT',properties:{id:{type:'STRING'},prompt:{type:'STRING'},concept:{type:'STRING'}},required:['id','prompt','concept']}}},required:['steps']},
  evaluation:{type:'OBJECT',properties:{correct:{type:'BOOLEAN'},feedback:{type:'STRING'},missingJustification:{type:'STRING'}},required:['correct','feedback','missingJustification']},
+ retrievalFeedback:{type:'OBJECT',properties:{feedback:{type:'STRING'},reasoningSound:{type:'BOOLEAN'}},required:['feedback','reasoningSound']},
  audit:{type:'OBJECT',properties:{valid:{type:'BOOLEAN'},rationale:{type:'STRING'}},required:['valid','rationale']},
  solution:{type:'OBJECT',properties:{steps:{type:'ARRAY',items:{type:'OBJECT',properties:{math:{type:'STRING'},explanation:{type:'STRING'}},required:['math','explanation']}},commonMistakes:{type:'ARRAY',items:{type:'STRING'}},interpretations:{type:'ARRAY',items:{type:'STRING'}}},required:['steps','commonMistakes','interpretations']},
  transfer:{type:'OBJECT',properties:{prompt:{type:'STRING'},expectedConcept:{type:'STRING'}},required:['prompt','expectedConcept']},
@@ -81,8 +82,8 @@ export async function handleLearningAction(request,env,cors){
    const active=state.active;
    if(!state.retrieval.active||active?.kind!=='retrieval'||body.questionId!==active.id||!['A','B','C','D','E','F'].includes(body.choice))return json({error:'No matching retrieval question is active.'},409,cors);
    const correct=body.choice==='F'?null:body.choice===active.question.correctAnswer;
-   const feedback=await generate(env,'Give concise retrieval-practice feedback on the supplied selected option and optional reasoning. Do not expose the next answer key.',{problem:state.problem,question:active.question,choice:body.choice,correct,reasoning:safeText(body.reasoning,5000)},'evaluation',controller.signal);
-   next=transition(state,{type:'retrieval-observation',questionId:active.id,skillId:active.question.moduleId,correct,reasoningSound:body.reasoning?feedback.correct===true:true});
+   const feedback=await generate(env,'Give concise retrieval-practice feedback on the supplied selected option and optional reasoning. Independently assess whether any supplied reasoning is mathematically sound. Do not expose the next answer key.',{problem:state.problem,question:active.question,choice:body.choice,correct,reasoning:safeText(body.reasoning,5000)},'retrievalFeedback',controller.signal);
+   next=transition(state,{type:'retrieval-observation',questionId:active.id,skillId:active.question.moduleId,correct,reasoningSound:body.reasoning?feedback.reasoningSound===true:true});
    result={answerCorrect:correct,feedback:feedback.feedback,solutionUnlocked:state.solution.unlocked};
   }else return json({error:'Unsupported learning action.'},400,cors);
   const controllerToken=await sealState(next,env.CONTROLLER_SECRET||env.GEMINI_API_KEY);

@@ -132,11 +132,11 @@ export default {async fetch(request,env){
     controlled=createLearningState({courseId:String(body.courseId||'default'),sessionId:String(body.sessionId||crypto.randomUUID()),problem,prerequisites:prerequisites.length?prerequisites:parsed.prerequisites,initialQuestion:nextQuestion,questionId});
   }else if(answer&&prev){
     const shouldVerify=answerCorrect===false&&trustedState.stage!=='verification'&&!trustedState.retrieval.active;
-    const eventType=shouldVerify?'diagnostic-answer':trustedState.retrieval?.active?'retrieval-observation':trustedState.stage==='verification'?'verification-answer':trustedState.phase===3?'training-observation':'diagnostic-answer';
+    const eventType=trustedState.retrieval?.active?'retrieval-observation':trustedState.stage==='verification'?'verification-answer':trustedState.phase===3?'training-observation':'diagnostic-answer';
     if(shouldVerify)nextQuestion={...parsed.nextQuestion,moduleId:trustedState.active.question.moduleId,skill:trustedState.active.question.skill};
     const activeGenerated=shouldVerify?{id:questionId,question:nextQuestion}:null;
     const event=eventType==='training-observation'?{type:eventType,questionId:trustedState.active.id,skillId:trustedState.active.question.moduleId,correct:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,nextQuestion:{id:questionId,question:nextQuestion}}:eventType==='retrieval-observation'?{type:eventType,questionId:trustedState.active.id,skillId:trustedState.active.question.moduleId,correct:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,nextQuestion:{id:questionId,question:nextQuestion}}:{type:eventType,questionId:trustedState.active.id,choice:answer,correct:answerCorrect===null?null:answerCorrect,reasoningSound:body.reasoning?parsed.reasoningSound!==false:true,objective:parsed.diagnosedSkill,nextQuestion:{id:questionId,question:nextQuestion}};
-    if(shouldVerify){event.type='diagnostic-answer';event.nextQuestion=activeGenerated;}
+    if(shouldVerify)event.nextQuestion=activeGenerated;
     if(eventType==='training-observation')event.objective=trustedState.active.question.assessmentType;
     controlled=transition(trustedState,event);
   }else if(trustedState.phase===2&&trustedState.diagnostics.length>=MAX_DIAGNOSTICS&&trustedState.stage!=='verification'){

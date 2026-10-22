@@ -20,6 +20,8 @@ globalThis.fetch=async(_url,options)=>{
  else if(system.startsWith('Generate one mathematically correct'))value={prompt:'Show that $a=a$.',expectedConcept:'Identity'};
  else if(system.startsWith('Evaluate the student solution'))value={correct:true,feedback:'The reasoning is sound.',missingJustification:''};
  else if(system.startsWith('Evaluate the student work'))value={correct:true,feedback:'The reasoning is sound.',missingJustification:''};
+ else if(system.startsWith('Generate one retrieval-first'))value={moduleId:'definition',prompt:'Which statement is reflexive?',options:['x=x','x≠x','x<x','x>x','none'],correctAnswer:'A',skill:'Identity',assessmentType:'definition',difficulty:'foundation',diagram:{type:'none',caption:'',labels:[]}};
+ else if(system.startsWith('Give concise retrieval-practice'))value={feedback:'Correct recall.',reasoningSound:true};
  else if(system.startsWith('Plan a concise'))value={steps:[{id:'s1',prompt:'State the identity.',concept:'Identity'}]};
  else throw Error(`Unexpected mock prompt: ${system}`);
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(value)}]}}]}));
@@ -34,5 +36,8 @@ try{
  const unlocked=await openState(output.controllerToken,env.CONTROLLER_SECRET);assert.equal(unlocked.solution.unlocked,true);assert.ok(unlocked.transfer.generated.near);
  const prior=globalThis.fetch;
  response=await handler.fetch(request('generate-transfer',{controllerToken:output.controllerToken,distance:'mid'}),env);assert.equal(response.status,200);output=await response.json();const failureState=output.controllerToken;globalThis.fetch=async()=>new Response(JSON.stringify({error:{message:'quota'}}),{status:429});response=await handler.fetch(request('generate-transfer',{controllerToken:failureState,distance:'wider'}),env);assert.equal(response.status,429);assert.equal((await openState(failureState,env.CONTROLLER_SECRET)).transfer.generated.wider,undefined);globalThis.fetch=prior;
- console.log('PASS: mocked Worker integration evaluation, verified solution unlock, audited transfer generation, and provider failure preserves state');
+ response=await handler.fetch(request('start-retrieval',{controllerToken:failureState}),env);assert.equal(response.status,200);output=await response.json();
+ response=await handler.fetch(request('answer-retrieval',{controllerToken:output.controllerToken,questionId:output.nextQuestion.questionId,choice:'A',reasoning:'Equality is reflexive.'}),env);assert.equal(response.status,200);output=await response.json();assert.equal(output.feedback,'Correct recall.');
+ const retrieved=await openState(output.controllerToken,env.CONTROLLER_SECRET);assert.equal(retrieved.retrieval.attempts.at(-1).reasoningSound,true);
+ console.log('PASS: mocked Worker integration evaluation, verified solution unlock, audited transfer, retrieval-specific feedback, and provider failure preserves state');
 }finally{globalThis.fetch=originalFetch;}
