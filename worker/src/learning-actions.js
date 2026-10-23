@@ -1,5 +1,6 @@
 import { assertCourseIsolation, migrateLearningState, transition } from './controller.js';
 import { openState, sealState } from './state-token.js';
+import { validModelMath } from './math-validation.js';
 
 const json=(value,status=200,cors={})=>new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...cors}});
 const TYPES={
@@ -18,6 +19,7 @@ async function generate(env,system,context,type,signal){
  const payload=await response.json(),text=payload?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('');
  if(!text||payload?.candidates?.[0]?.finishReason==='MAX_TOKENS')throw new Error('Incomplete Gemini response. No learning state was advanced.');
  const value=JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g,''));
+ if(!validModelMath(value))throw new Error('Malformed mathematical notation; no learning state was advanced.');
  return value;
 }
 async function independentlyAudit(env,kind,context,signal){

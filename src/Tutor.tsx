@@ -79,7 +79,7 @@ function ThreadMessage({message}:{message:ConversationMessage}){
   return <div className="assistantMessage"><div className={`assistantMark ${message.verdict===true?'markCorrect':message.verdict===false?'markReview':''}`}>{message.verdict===true?<Check size={17}/>:<BookOpen size={17}/>}</div><div className={`assistantBubble ${message.verdict===false?'reviewBubble':message.verdict===true?'correctBubble':''}`}>{message.verdict!==undefined&&<div className="messageLabel">{message.verdict===true?'CORRECT':message.verdict===false?'LET’S REVIEW THIS':'TUTOR'}</div>}{(message.blocks||[]).map((block,index)=><div key={index} className={block.type==='derivation'?'explanationText':block.type==='callout'?'notice':''}><MathText text={block.text}/></div>)}</div></div>;
 }
 
-export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionId, courseId }: { initial: LearnerState; onSave: (state: LearnerState) => void; priorEvidence: unknown[]; phase: number; onPhase: (phase: number) => void; sessionId: string; courseId: string }) {
+export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionId, courseId, conversationActions }: { initial: LearnerState; onSave: (state: LearnerState) => void; priorEvidence: unknown[]; phase: number; onPhase: (phase: number) => void; sessionId: string; courseId: string; conversationActions?: React.ReactNode }) {
   const currentTurnRef = useRef<HTMLDivElement>(null);
   const [atLatest,setAtLatest]=useState(true);
   const imageTask = useRef(0);
@@ -161,7 +161,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
         mode: !focusSkill && (repetition || state.mode === 'repetition') ? 'repetition' : 'guided', diagnosticsCount: diagnosticCount,
         feedback: responseFeedback, explanation: responseExplanation, verdict, diagnosedSkill: cleanTutorText(output.diagnosedSkill || ''), difficulty: nextQuestion.difficulty || output.difficulty || state.difficulty || 'standard'
       });
-      if (answer && question) setShowNext(false);
+      if (answer && question) setShowNext(true);
       if (start) { setProblemText(''); setImage(null); }
       setChoice(''); setReasoning(''); setShowDiagram(false); setFeedbackTags([]); setFeedbackNote(''); setReviewProblem(false); setPendingStart(null);
   }
@@ -307,7 +307,6 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
             {stage==='diagnostic-choice'&&<div className="assistantMessage currentTurn"><div className="assistantMark"><BookOpen size={17}/></div><div className="assistantBubble"><div className="messageLabel">DIAGNOSTIC CHECKPOINT</div><p>At least ten diagnostic questions are complete. You can continue diagnosis or begin targeted topic training. Uncertainty and identified gaps remain recorded.</p><div className="submitBar"><button className="button secondary" disabled={busy} onClick={()=>void controllerAction('continue-diagnosis')}>Continue diagnosis</button><button className="button primary" disabled={busy} onClick={()=>void controllerAction('finish-diagnosis')}>Move to topic training</button></div></div></div>}
             {stage === 'learning' && (state.modules || []).length > 0 && <div className="topicChooser"><label htmlFor="topic-focus">Targeted topic</label><select id="topic-focus" disabled={busy} value={active.moduleId || ''} onChange={event => { const module = state.modules?.find(m => m.id === event.target.value); if (module) { setShowNext(true); void callTutor({ focusSkill: module.title }); } }}><option value="" disabled>Choose a prerequisite</option>{state.modules?.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}</select></div>}
             <div ref={currentTurnRef}>{state.teaching && <TeachingCard lesson={state.teaching} />}</div>
-            {state.feedback && history.length > 0 && !showNext && <div className="feedbackCheckpoint">{stage === 'verification' && <p>A new question will check this idea before it is treated as a conceptual gap.</p>}<button className="button primary" onClick={() => setShowNext(true)}>Continue to the next question <ChevronRight size={16}/></button></div>}
             {!['mistake-check','diagnostic-choice'].includes(stage)&&(stage==='repetition'||phase<=3)&&(showNext || !history.length) && <div className="assistantMessage currentTurn" ><div className="assistantMark"><BookOpen size={17} /></div><div className="assistantBubble questionBubble">
               <div className="questionMeta">{stage === 'diagnostic' && <span>Question {(state.diagnosticsCount || 0) + 1} / 10 · </span>}<span>{active.skill || 'Problem reasoning'}</span><span className="metaDot" /> <span>Adaptive · {active.difficulty || state.difficulty || 'standard'}</span><button className="iconButton" title="Repeat this question" aria-label="Repeat this question" disabled={busy} onClick={() => enterRepetition(active)}><RotateCcw size={16} /></button></div>
               <div className="questionPrompt"><MathText text={active.prompt} /></div>
@@ -318,6 +317,7 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
               <div className="submitBar"><button className="feedbackLink" onClick={() => setFeedbackOpen(true)}>Optional feedback{feedbackTags.length || feedbackNote ? ' · saved' : ''}</button><button className="button primary" disabled={busy || (!choice && !feedbackNote.trim() && !feedbackTags.length)} onClick={() => void (stage==='repetition'&&choice?answerRetrieval():callTutor())}>{busy ? 'Checking…' : choice ? 'Submit answer' : 'Send feedback'} {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
             </div></div>}
             {error && <div className="error" role="alert">{error}</div>}
+            {conversationActions}
           </section>
           {!atLatest&&<button className="latestButton" onClick={()=>currentTurnRef.current?.scrollIntoView({behavior:'smooth',block:'end'})}>Return to latest ↓</button>}
           {false&&showHistory && <div className="historyCard"><strong>Answered questions</strong></div>}
