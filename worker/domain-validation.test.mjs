@@ -44,7 +44,7 @@ for (const fixture of cases) {
   state=transition(state,{type:'transfer-generated',distance:'near',prompt:`A related ${fixture.name} exercise.`});
   state=transition(state,{type:'transfer-evaluated',distance:'near',correct:true,feedback:'The essential reasoning is present.'});
   state=transition(state,{type:'retrieval-started',question:{id:'r1',question:fixture.question}});
-  state=transition(state,{type:'retrieval-observation',questionId:'r1',skillId:fixture.question.moduleId,correct:true,reasoningSound:true});
+  state=transition(state,{type:'retrieval-observation',questionId:'r1',skillId:fixture.question.moduleId,choice:'A',correct:true,reasoningSound:true});
   assert.deepEqual(state.phaseHistory,[0,1,2,3,4,5,6],`${fixture.name}: all phases must be recorded in order`);
 }
 

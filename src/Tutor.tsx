@@ -288,10 +288,11 @@ export function Tutor({ initial, onSave, priorEvidence, phase, onPhase, sessionI
       currentQuestion: question,
       answer,
       reasoning: answer ? reasoning : '',
-        history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
+        history: start ? [] : history.slice(-8).map(item => ({ question: item.question.prompt, options:item.question.options, choice: item.choice, isCorrect: item.isCorrect, skill: item.question.skill, moduleId: item.question.moduleId, reasoningSound: item.reasoningSound, reasoning: item.reasoning, feedback: item.feedback })),
       diagnosticsCount: start ? 0 : Math.min(10, state.diagnosticsCount || 0),
       consecutiveCorrect: start ? 0 : answer && question ? answer === question.correctAnswer ? Math.min(5, currentStreak + 1) : 0 : Math.min(5, currentStreak),
       learnerFeedback: start ? { tags: [], note: '' } : { tags: feedbackTags, note: feedbackNote },
+      clarificationOnly: !start && !answer && Boolean(feedbackNote.trim() || feedbackTags.length),
       diagramRequested: Boolean(showDiagram),
     };
     try {

@@ -55,6 +55,9 @@ try{
  const afterClarification=await openState(clarified.controllerToken,env.CONTROLLER_SECRET);
  assert.equal(afterClarification.active.id,beforeClarification.active.id);
  assert.equal(afterClarification.diagnostics.length,beforeClarification.diagnostics.length);
+ assert.equal(clarified.responseClassification,'clarification');
+ assert.equal(clarified.nextQuestion.questionId,beforeClarification.active.id,'clarification preserves active question identity');
+ assert.equal(lastTutorPayload.learnerResponseType,'clarification');
  assert.ok(Number.isFinite(clarified.performance.totalMs));result=clarified;
 
  // Client stage/count claims do not alter the encrypted server state.
@@ -74,6 +77,10 @@ try{
  const fStart=await post({...startBody,sessionId:'session-f'});const fs=await fStart.json();
  const fResponse=await post({...startBody,sessionId:'session-f',controllerToken:fs.controllerToken,answer:'F'});const fr=await fResponse.json();
  assert.equal(fr.answerCorrect,null,'F is uncertainty, not an incorrect assessed response');
+ assert.equal(fr.responseClassification,'uncertain');
+ assert.match(fr.feedback,/selected.*I don't know yet.*uncertainty/i);
+ assert.match(fr.contentBlocks[0].text,/uncertainty/i);
+ assert.equal(lastTutorPayload.learnerResponseType,'uncertain');
  const fState=await openState(fr.controllerToken,env.CONTROLLER_SECRET);assert.equal(fState.diagnostics[0].correct,null);assert.equal(fState.verifications.length,0);
 
  const image=await post({courseId:'analysis',sessionId:'image-session',theorem:'',image:{mimeType:'image/png',data:'AQID'}});

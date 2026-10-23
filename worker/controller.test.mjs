@@ -25,7 +25,7 @@ for(let i=0;i<10;i++){
     assert.equal(state.stage,'mistake-check');
     state=transition(state,{type:'mistake-decision',accidental:true});
     assert.equal(state.stage,'verification');
-    state=transition(state,{type:'verification-answer',questionId:state.active.id,correct:false,reasoningSound:false,nextQuestion:following(`verify-next-${i}`)});
+    state=transition(state,{type:'verification-answer',questionId:state.active.id,choice:'B',correct:false,reasoningSound:false,nextQuestion:following(`verify-next-${i}`)});
     assert.equal(state.verifications.at(-1).result,'conceptual-gap');
   }
 }
@@ -37,6 +37,16 @@ assert.equal(state.phase,3);
 assert.equal(state.remediation.definition.status,'identified-gap');
 assert.equal(currentStage(state),'training');
 assert.throws(()=>assertCourseIsolation(state,'probability','s1'),/does not belong/);
+
+let uncertain=createLearningState({courseId:'analysis',sessionId:'uncertain',problem:'P',prerequisites:modules,initialQuestion:q(),questionId:'u0'});
+uncertain=transition(uncertain,{type:'diagnostic-answer',questionId:'u0',choice:'F',correct:null,reasoningSound:false,nextQuestion:following('u1')});
+assert.equal(uncertain.diagnostics[0].classification,'uncertain');
+for(let i=1;i<10;i++)uncertain=transition(uncertain,{type:'diagnostic-answer',questionId:uncertain.active.id,choice:'A',correct:true,reasoningSound:true,objective:`sound-${i}`,nextQuestion:following(`u${i+1}`)});
+uncertain=transition(uncertain,{type:'finish-diagnosis'});
+assert.equal(uncertain.remediation.definition.status,'uncertain','F must not be classified as a conceptual error');
+assert.equal(uncertain.remediation.definition.unresolvedMisses,0);
+assert.equal(uncertain.remediation.definition.needed,true,'uncertainty routes into scaffolding without earning mastery');
+assert.throws(()=>transition(createLearningState({courseId:'a',sessionId:'f-invalid',problem:'P',prerequisites:modules,initialQuestion:q(),questionId:'f0'}),{type:'diagnostic-answer',questionId:'f0',choice:'F',correct:true}),/F is uncertainty/);
 
 let rejected=createLearningState({courseId:'analysis',sessionId:'s2',problem:'P',prerequisites:modules,initialQuestion:q(),questionId:'q'});
 assert.throws(()=>transition(rejected,{type:'diagnostic-answer',questionId:'tampered',choice:'A',correct:true}),/No matching/);
@@ -70,10 +80,10 @@ state=transition(state,{type:'transfer-generated',distance:'near',prompt:'A rela
 state=transition(state,{type:'transfer-evaluated',distance:'near',correct:false,feedback:'Review the definition.'});
 
 state=transition(state,{type:'retrieval-started',question:following('retrieval-0')});
-for(let i=0;i<10;i++) state=transition(state,{type:'retrieval-observation',questionId:state.active.id,skillId:'definition',correct:true,reasoningSound:true,kind:'original-recall',nextQuestion:following(`retrieval-${i+1}`)});
+for(let i=0;i<10;i++) state=transition(state,{type:'retrieval-observation',questionId:state.active.id,skillId:'definition',choice:'A',correct:true,reasoningSound:true,kind:'original-recall',nextQuestion:following(`retrieval-${i+1}`)});
 assert.equal(state.retrieval.openingComplete,true);
 assert.equal(state.retrieval.active,true,'REPITITION continues after ten until explicitly stopped');
-state=transition(state,{type:'retrieval-observation',questionId:state.active.id,skillId:'definition',correct:true,reasoningSound:true,kind:'interleaved',nextQuestion:following('retrieval-12')});
+state=transition(state,{type:'retrieval-observation',questionId:state.active.id,skillId:'definition',choice:'A',correct:true,reasoningSound:true,kind:'interleaved',nextQuestion:following('retrieval-12')});
 assert.equal(state.retrieval.attempts.length,11);
 state=transition(state,{type:'retrieval-stopped'});
 

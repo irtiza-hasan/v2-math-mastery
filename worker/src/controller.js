@@ -41,7 +41,7 @@ export function migrateLearningState(state) {
 
 function ladderFor(state, skillId) {
   const observations = state.diagnostics.filter(item => item.skillId === skillId);
-  const wrong = observations.filter(item => item.correct === false || item.reasoningSound === false).length;
+  const wrong = observations.filter(item => item.correct === false || (item.correct === true && item.reasoningSound === false)).length;
   const uncertain = observations.filter(item => item.correct === null).length;
   if (!wrong && !uncertain && observations.length >= 2) return { level: 'secure', target: 2 };
   if (wrong <= 1 && uncertain <= 1) return { level: 'mild', target: 4 };
@@ -51,9 +51,11 @@ function ladderFor(state, skillId) {
 function diagnosticSummary(state) {
   return Object.fromEntries(state.prerequisites.map(module => {
     const observations = state.diagnostics.filter(item => item.skillId === module.id);
-    const gap = observations.some(item => item.correct !== true || !item.reasoningSound);
+    const incorrect = observations.some(item => item.correct === false || (item.correct === true && !item.reasoningSound));
+    const uncertain = observations.some(item => item.correct === null);
+    const gap = incorrect || uncertain;
     const ladder = ladderFor(state, module.id);
-    return [module.id, { needed: gap, status: gap ? 'identified-gap' : observations.length ? 'observed-no-gap' : 'uncertain', level: ladder.level, target: gap ? ladder.target : 0, observations: observations.length, unresolvedMisses: gap ? 1 : 0 }];
+    return [module.id, { needed: gap, status: incorrect ? 'identified-gap' : uncertain ? 'uncertain' : observations.length ? 'observed-no-gap' : 'uncertain', level: ladder.level, target: gap ? ladder.target : 0, observations: observations.length, unresolvedMisses: incorrect ? 1 : 0 }];
   }));
 }
 
@@ -72,8 +74,8 @@ export function transition(state, event) {
     next.active = { id: event.questionId, question: event.initialQuestion, kind: 'diagnostic' };
   } else if (event.type === 'diagnostic-answer') {
     if (state.phase !== 2 || state.stage !== 'diagnostic' || state.active?.id !== event.questionId) throw new Error('No matching diagnostic question is active.');
-    if (![true,false,null].includes(event.correct) || !['A','B','C','D','E','F'].includes(event.choice)) throw new Error('Invalid diagnostic observation.');
-    const record = { questionId:event.questionId, skillId:state.active.question.moduleId, kind:'diagnostic', correct:event.correct, reasoningSound:event.reasoningSound === true, objective:String(event.objective||'').slice(0,100), time:Date.now() };
+    if (![true,false,null].includes(event.correct) || !['A','B','C','D','E','F'].includes(event.choice) || (event.choice==='F') !== (event.correct===null)) throw new Error('Invalid diagnostic observation: F is uncertainty, not correctness.');
+    const record = { questionId:event.questionId, skillId:state.active.question.moduleId, kind:'diagnostic', classification:event.choice==='F'?'uncertain':event.correct?'correct':'incorrect', correct:event.correct, reasoningSound:event.choice!=='F' && event.reasoningSound === true, objective:String(event.objective||'').slice(0,100), time:Date.now() };
     next.diagnostics.push(record); next.pendingQuestion = event.nextQuestion || null; next.active = null;
     if (event.correct === false) {
       next.stage = 'mistake-check';
@@ -95,10 +97,10 @@ export function transition(state, event) {
       else { next.stage='diagnostic'; next.active=following ? {id:following.id,question:following.question,kind:'diagnostic'} : null; }
     }
   } else if (event.type === 'verification-answer') {
-    if (state.stage !== 'verification' || state.active?.kind !== 'verification' || event.questionId !== state.active.id) throw new Error('No matching verification question is active.');
+    if (state.stage !== 'verification' || state.active?.kind !== 'verification' || event.questionId !== state.active.id || !['A','B','C','D','E','F'].includes(event.choice) || ![true,false,null].includes(event.correct) || (event.choice==='F') !== (event.correct===null)) throw new Error('No matching verification question is active.');
     const pending = [...next.verifications].reverse().find(item => item.result === 'pending');
     if (!pending) throw new Error('No response is awaiting verification.');
-    pending.attempts++; pending.result = event.correct === true && event.reasoningSound === true ? 'possible-accident' : event.correct === null ? 'uncertain' : 'conceptual-gap';
+    pending.attempts++; pending.result = event.choice==='F' ? 'uncertain' : event.correct === true && event.reasoningSound === true ? 'possible-accident' : 'conceptual-gap';
     if (pending.result !== 'possible-accident') { const ladder=ladderFor(next,pending.skillId); next.remediation[pending.skillId]={needed:true,status:pending.result==='uncertain'?'uncertain':'identified-gap',...ladder,unresolvedMisses:1}; }
     next.pendingQuestion = null;
     if (pending.sourceKind === 'training') { next.phase=3; next.stage='training'; next.active=event.nextQuestion ? {id:event.nextQuestion.id,question:event.nextQuestion.question,kind:'training'} : null; }
@@ -157,7 +159,8 @@ export function transition(state, event) {
     next.retrieval={...next.retrieval,active:true,openingComplete:false,stoppedAt:null}; next.stage='repetition'; next.active={id:event.question.id,question:event.question.question,kind:'retrieval'};
   } else if (event.type === 'retrieval-observation') {
     if (!state.retrieval.active || state.active?.kind!=='retrieval' || event.questionId!==state.active.id || ![true,false,null].includes(event.correct)) throw new Error('Invalid REPITITION observation.');
-    next.retrieval.attempts.push({questionId:event.questionId,skillId:event.skillId||null,correct:event.correct,reasoningSound:event.reasoningSound===true,kind:event.kind||'original-recall',time:Date.now()});
+    if (!['A','B','C','D','E','F'].includes(event.choice) || (event.choice==='F') !== (event.correct===null)) throw new Error('REPITITION choice classification is invalid.');
+    next.retrieval.attempts.push({questionId:event.questionId,skillId:event.skillId||null,classification:event.choice==='F'?'uncertain':event.correct?'correct':'incorrect',correct:event.correct,reasoningSound:event.choice!=='F'&&event.reasoningSound===true,kind:event.kind||'original-recall',time:Date.now()});
     next.retrieval.openingComplete=next.retrieval.attempts.length>=next.retrieval.openingTarget; next.active=event.nextQuestion?{id:event.nextQuestion.id,question:event.nextQuestion.question,kind:'retrieval'}:null;
   } else if (event.type === 'retrieval-stopped') {
     if (!state.retrieval.active) throw new Error('REPITITION is not active.');
