@@ -5,7 +5,7 @@ import { openState } from './src/state-token.js';
 
 const env={ALLOWED_ORIGIN:'http://localhost:5173',GEMINI_API_KEY:'fake',CONTROLLER_SECRET:'test-controller-secret-is-long-enough',GEMINI_MODEL:'gemini-3.5-flash-lite'};
 const originalFetch=globalThis.fetch;
-let calls=0, lastTutorPayload, malformedOnce=false, rejectAuditOnce=false, ip=0;
+let calls=0, lastTutorPayload, malformedOnce=false, rejectAuditOnce=false, noveltyRegenerate=false, ip=0;
 const modules=[{id:'cauchy',title:'Cauchy condition',purpose:'Control distances between late terms.',dependsOn:[]},{id:'triangle',title:'Triangle inequality',purpose:'Join estimates.',dependsOn:['cauchy']}];
 const question={moduleId:'cauchy',prompt:'Which estimate follows from the Cauchy condition?',options:['$d(x_n,x_m)<\\varepsilon$ for all large $n,m$','$d(x_n,x_m)>\\varepsilon$','$x_n=x_m$','$x_n$ is bounded only','$x_n$ is constant'],correctAnswer:'A',skill:'Cauchy condition',difficulty:'standard',diagram:{type:'none',caption:'',labels:[]}};
 const teaching={title:'Control late terms',concept:'The Cauchy condition controls every pair beyond a common index.',workedExample:'For tolerance $0.1$, choose $N$ so $d(x_n,x_m)<0.1$ whenever both indices exceed $N$.',connection:'Use one late subsequence term near the limit.'};
@@ -20,6 +20,7 @@ globalThis.fetch=async (_url,opts)=>{
  }
  lastTutorPayload=JSON.parse(request.contents[0].parts[0].text);
  const result={prerequisites:modules,teaching,reasoningSound:true,problem:'Faithful image transcription',feedback:'Check the quantifiers.',explanation:'Every sufficiently late pair is controlled.',isCorrect:true,learningPlan:{focus:'Cauchy condition',nextMove:'Apply the definition.'},uniqueCorrectChoice:true,correctAnswerRationale:'Only A satisfies the condition.',diagnosedSkill:'Cauchy condition',phase:'Step 2',difficulty:'standard',nextQuestion:{...question,moduleId:lastTutorPayload.selectedModule||'cauchy'}};
+ if(noveltyRegenerate&&lastTutorPayload.generationIssue){result.nextQuestion.prompt='Which condition controls all pairs of sufficiently late sequence terms?';noveltyRegenerate=false;}
  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}]}),{headers:{'Content-Type':'application/json'}});
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++ip}`},body:JSON.stringify(body)});
@@ -87,6 +88,12 @@ try{
  assert.equal(image.status,200);assert.equal((await image.json()).problem,'Faithful image transcription');assert.equal(lastTutorPayload.problemText,'');
  assert.equal((await post({courseId:'analysis',sessionId:'bad-image',theorem:'',image:{mimeType:'image/svg+xml',data:'PHN2Zy8+'}})).status,400);
  assert.equal((await post({courseId:'analysis',sessionId:'oversized',theorem:'x'.repeat(5_800_001)})).status,413);
+
+ const beforeNovelty=calls;noveltyRegenerate=true;
+ const novelty=await post({courseId:'analysis',sessionId:'novelty-retry',theorem:'A sequence problem.',history:[{question:question.prompt,options:question.options}]});
+ assert.equal(novelty.status,200,'duplicate candidates are regenerated before creating session state');
+ const noveltyResult=await novelty.json();assert.match(noveltyResult.nextQuestion.prompt,/controls all pairs/);
+ assert.equal(calls-beforeNovelty,3,'duplicate rejection triggers one regeneration and one independent audit');
 
  const before=calls;malformedOnce=true;
  const recovered=await post({courseId:'analysis',sessionId:'malformed',theorem:'A theorem.'});assert.equal(recovered.status,200);assert.equal(calls-before,3,'malformed output regenerates and is audited');
