@@ -19,6 +19,6 @@ export async function openState(token, secret) {
   const key=await keyFrom(secret);
   const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(iv),additionalData:encoder.encode('llm-ta-state-v1')},key,unb64(ciphertext));
   const state=JSON.parse(decoder.decode(plain));
-  if(!state||state.version!==1||!Array.isArray(state.prerequisites)||!state.active) throw new Error('Invalid learning-state payload.');
+  if(!state||![1,2].includes(state.version)||!Array.isArray(state.prerequisites)||typeof state.courseId!=='string'||typeof state.sessionId!=='string'||!Number.isInteger(state.phase)||state.phase<0||state.phase>6) throw new Error('Invalid learning-state payload.');
   return state;
 }

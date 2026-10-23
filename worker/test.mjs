@@ -24,6 +24,7 @@ globalThis.fetch=async (_url,opts)=>{
 };
 const req=(path,origin,body)=>new Request('https://example.workers.dev'+path,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':`test-${++ip}`},body:JSON.stringify(body)});
 const post=body=>handler.fetch(req('/tutor','http://localhost:5173',body),env);
+const learn=body=>handler.fetch(req('/learning','http://localhost:5173',body),env);
 try{
  assert.equal((await handler.fetch(req('/tutor','https://evil.example',{theorem:'Test'}),env)).status,403);
  const startBody={courseId:'analysis',sessionId:'session-1',theorem:'Let $(x_n)$ be Cauchy and $x_{n_k}\\to x$. Prove $x_n\\to x$.'};
@@ -35,15 +36,26 @@ try{
  assert.equal(state.problem,startBody.theorem);assert.equal(state.phase,2);
  assert.equal(lastTutorPayload.priorPolicy,'prior-informs-start-never-skips-diagnosis');
 
- // A wrong response receives a fresh, same-skill verification question; the original miss remains recorded.
+ // A wrong response first requires an explicit accidental-error decision.
  const wrong=await post({...startBody,controllerToken:result.controllerToken,answer:'B',reasoning:'I assumed consecutive terms only.'});
- assert.equal(wrong.status,200);result=await wrong.json();assert.equal(result.answerCorrect,false);assert.equal(result.stage,'verification');assert.equal(result.diagnosticsCount,1);
- assert.equal('correctAnswer' in result.nextQuestion,false);
- state=await openState(result.controllerToken,env.CONTROLLER_SECRET);assert.equal(state.diagnostics[0].correct,false);assert.equal(state.verifications[0].result,'pending');
+ assert.equal(wrong.status,200);result=await wrong.json();assert.equal(result.answerCorrect,false);assert.equal(result.stage,'mistake-check');assert.equal(result.nextQuestion,null);assert.equal(result.diagnosticsCount,1);
+ state=await openState(result.controllerToken,env.CONTROLLER_SECRET);assert.equal(state.diagnostics[0].correct,false);assert.equal(state.verifications[0].result,'awaiting-claim');
+
+ const claim=await learn({courseId:'analysis',sessionId:'session-1',controllerToken:result.controllerToken,action:'mistake-decision',accidental:true});
+ assert.equal(claim.status,200);result=await claim.json();assert.equal(result.stage,'verification');assert.equal('correctAnswer' in result.nextQuestion,false);
 
  const verified=await post({...startBody,controllerToken:result.controllerToken,answer:'A',reasoning:'The common threshold controls any two later indices.'});
  assert.equal(verified.status,200);result=await verified.json();assert.equal(result.stage,'diagnostic');
  state=await openState(result.controllerToken,env.CONTROLLER_SECRET);assert.equal(state.verifications[0].result,'possible-accident');
+
+ // Clarification/feedback preserves the active question and does not count as an assessment.
+ const beforeClarification=await openState(result.controllerToken,env.CONTROLLER_SECRET);
+ const clarification=await post({...startBody,controllerToken:result.controllerToken,note:'Can you clarify the quantifiers without grading me?'});
+ assert.equal(clarification.status,200);const clarified=await clarification.json();
+ const afterClarification=await openState(clarified.controllerToken,env.CONTROLLER_SECRET);
+ assert.equal(afterClarification.active.id,beforeClarification.active.id);
+ assert.equal(afterClarification.diagnostics.length,beforeClarification.diagnostics.length);
+ assert.ok(Number.isFinite(clarified.performance.totalMs));result=clarified;
 
  // Client stage/count claims do not alter the encrypted server state.
  const wrongCourse=await post({...startBody,courseId:'probability',controllerToken:result.controllerToken,answer:'A'});
@@ -53,8 +65,10 @@ try{
   const response=await post({...startBody,controllerToken:result.controllerToken,answer:'A',stage:'proof',phase:6,diagnosticsCount:100});
   assert.equal(response.status,200);result=await response.json();count=result.diagnosticsCount;
  }
- assert.equal(result.diagnosticsCount,10);assert.equal(result.stage,'training');assert.equal(result.phase,3);
- assert.equal(lastTutorPayload.stage,'learning');
+ assert.equal(result.diagnosticsCount,10);assert.equal(result.stage,'diagnostic-choice');assert.equal(result.phase,2);
+ const finished=await learn({courseId:'analysis',sessionId:'session-1',controllerToken:result.controllerToken,action:'finish-diagnosis'});
+ assert.equal(finished.status,200);result=await finished.json();assert.equal(result.stage,'training');assert.equal(result.phase,3);
+
 
  const noToken=await post({...startBody,answer:'A',stage:'proof',diagnosticsCount:10});assert.equal(noToken.status,409);
  const fStart=await post({...startBody,sessionId:'session-f'});const fs=await fStart.json();

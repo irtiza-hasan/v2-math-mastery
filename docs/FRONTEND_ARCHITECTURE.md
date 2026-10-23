@@ -6,7 +6,7 @@ The learning workspace uses one centered conversational reading column (maximum 
 
 The redesign extends the existing React / TypeScript / Vite application. It retains the KaTeX parser, screenshot compression and transcription confirmation, validated prerequisite DAG, per-module teaching, audited five-option questions with independent F, learner feedback, and existing Cloudflare Worker / Gemini provider. The provider was not replaced and no browser API key was introduced.
 
-The course dashboard uses the supplied white-and-teal showcase as visual direction. Course context stays in the navigation, mathematical work occupies the center, and learning context appears in a collapsible right panel. Small screens use an accessible navigation drawer and stack the insights beneath the work. Seven named phase views replace the anonymous three-step navigation. Viewing a phase is not evidence of completion.
+Course context stays in the collapsible navigation and mathematical work occupies one centered conversational column. Original problem, prerequisite map, course evidence, notes, and scratchwork open as lightweight contextual sections above the conversation; there is no permanent right panel. Small screens use the same full-width conversation with an accessible navigation drawer. The current phase is muted metadata, and viewing a phase is never evidence of completion.
 
 ### Component hierarchy
 
@@ -16,7 +16,7 @@ The course dashboard uses the supplied white-and-teal showcase as visual directi
 - `SkillMap`: course-specific graph and source-response evidence panel.
 - `LearningWorkspace`: phase-specific views, context panel, map tab, notes, scratchpad, attachments, solution reconstruction, and transfer journals.
 - `PrerequisiteGraph`: keyboard-selectable nodes, actual dependency edges, scrolling/zoom, and node details.
-- `Tutor`: extracted existing tutor, including image workflow, teaching, MCQ, optional reasoning, optional feedback without a selection, and history. New feedback checkpoints require an explicit continuation before displaying the next question.
+- `Tutor`: chronological conversational thread, image workflow, one active MCQ, optional reasoning, clarification without a selection, silly-mistake decision, diagnostic checkpoint, and continuing REPITITION.
 - `models.ts`: courses, sessions, shared course-skill identities, append-only observed evidence, and transparent status interpretation.
 - `repository.ts`: versioned browser-storage boundary with legacy import and stale-write protection.
 - `api-contracts.ts`: future provider-neutral problem analysis, prerequisites, diagnosis, response/feedback, integration, verified solution unlock, transfer, and evidence contracts.
@@ -48,12 +48,12 @@ Prior observations from other sessions are supplied separately as `coursePrior`.
 | Sessions, draft autosave, resume, rename, search, archive/restore, delete | Implemented in browser storage |
 | Course evidence map and selected-skill observations | Implemented from actual saved responses |
 | Problem-specific dependency map | Implemented from validated tutor output |
-| Diagnostic and topic-training UI | Existing live provider preserved; feedback pause, count, topic selector, optional feedback retained |
-| Mistake verification | UI sends learner-requested verification as feedback; updated Worker instructs a fresh same-skill check; no dedicated deterministic verification state machine |
+| Diagnostic and topic-training UI | Implemented with one active A–E/F question and persisted chronological turns |
+| Mistake verification | Dedicated controller states require the learner decision and fresh same-skill verification; original miss is retained |
 | Prior-based initial diagnosis | Bounded prompt context in updated Worker; model-selected focus, never an assessment exemption |
-| Integration | Existing audited derivation/proof checkpoints plus saved free-form work; scratchpad is not automatically graded |
-| Complete solution | Student reconstruction journal and reflection checklist; verified complete-solution unlock requires future backend response |
-| Near/mid/wider transfer | Persisted student-authored exercise/attempt journals and retrieval re-entry; generated/evaluated transfer requires future backend response |
+| Integration | Ordered audited five-choice reconstruction; only the active step can be submitted |
+| Complete solution | Backend-controlled, independently audited unlock after all integration steps pass |
+| Near/mid/wider transfer | Gemini-generated and evaluated; REPITITION continues after its opening ten until explicit stop |
 | Cloud persistence, authentication, multi-device sync | Not implemented |
 | Demo or fabricated student evidence | None seeded or presented as real |
 
@@ -61,7 +61,7 @@ The Worker now supplies encrypted, server-authenticated progression state, audit
 
 ## Pedagogical specification
 
-`DESIGN_BRIEF.md` preserves the supplied redesign specification. No separate updated tutoring prompt was present in this attachment; the existing Worker instructions remain the operational tutor specification with the compatibility changes described above. Before a future tutoring-engine upgrade, supply the authoritative complete Phases 0–6 prompt. Do not infer scientific validation, precise mastery, or a full assessment policy from UI labels.
+`DESIGN_BRIEF.md` preserves the interface specification. `TUTORING_ENGINE.md` documents the implemented V2 operational behavior, including the supplied 2/4/10 evidence-guided training ladders. These thresholds are controller rules, not claims of psychometric validation or general mathematical mastery.
 
 ## Validation
 

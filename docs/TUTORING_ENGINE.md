@@ -1,24 +1,32 @@
-# Tutoring engine
+# V2 tutoring engine
 
-The Cloudflare Worker owns progression decisions. `/tutor` creates a session, grades submitted choices against the active question kept in an authenticated encrypted controller token, audits the next five-choice question, and returns a new token. `/learning` performs integration planning and step evaluation, verified solution unlock, transfer generation/evaluation, and retrieval-question generation. The browser stores the opaque token with the existing versioned local session record and sends it back when a conversation resumes.
+The Cloudflare Worker is authoritative for progression. `/tutor` handles orientation, prerequisite mapping, diagnosis, accidental-error verification, and targeted topic training. `/learning` handles controller-only decisions, ordered integration, verified solution unlock, transfer, and REPITITION. The browser stores the opaque authenticated state token with the local session and cannot advance a phase by changing view state or request fields.
 
-## Current deterministic rules
+## Deterministic rules
 
-- Session creation records Phase 0 orientation and Phase 1 prerequisite mapping before entering Phase 2 with one active audited diagnostic question. At least ten diagnostic answers are recorded before Phase 3; a wrong answer triggers a fresh same-skill verification question. `F` is stored as uncertainty and is not graded as incorrect.
-- Diagnostic mistakes are never erased. Verification distinguishes a possible accidental error (fresh response correct with sound reasoning), uncertainty, and a conceptual gap. Unresolved conceptual gaps are practiced in Phase 3.
-- A prerequisite is considered ready after five sound, correct responses across at least three assessment types. This is a provisional controller policy, not a rule recovered from the authoritative updated tutoring prompt. Replace it when that specification is supplied.
-- Integration uses an independently audited ordered step plan. Only the first unaccepted step can be evaluated; each student step is independently checked. A complete, independently audited solution is returned only after all plan steps are accepted.
-- Transfer items and evaluations are independently checked before their state is recorded. Retrieval starts with an audited question and does not overwrite the original learning history.
-- Question answer keys remain inside the encrypted token and are removed from API responses. Course/session IDs are bound to each token; the prerequisite map is taken from trusted state after session creation.
+- Phase 0 and Phase 1 are explicit controller states and are recorded before the first audited Phase 2 question. The initial conversational response presents orientation, a minimal prerequisite map, and the first diagnostic question without solving the problem.
+- Phase 2 requires at least ten A–E/F responses. Question 10 opens a choice to continue diagnosis or advance; it never advances silently. Course evidence may change the generated starting focus or difficulty but does not count as a current response.
+- A wrong diagnostic or training response enters `mistake-check`. A learner claim of a silly mistake opens a fresh same-skill verification item; the original miss remains recorded. Rejecting the claim records a gap directly. `F` records uncertainty and does not enter the silly-mistake flow.
+- Phase 3 uses evidence-guided ladders from the supplied V2 specification: secure topics receive two varied verification items, mildly shaky topics target four responses, and weak topics target ten. Misses add replacement work; the controller requires sound observations, multiple assessment angles, and no unresolved miss. These are operational gates, not psychometrically validated mastery scores.
+- Phase 4 is an audited, ordered sequence of five-choice reconstruction questions. Only the active step can be accepted. Incorrect/uncertain work leaves that step active. A later step or client-supplied unlock flag cannot bypass the sequence.
+- Phase 5 is unlocked only after every controller-owned integration step is accepted and the complete solution passes independent mathematical review.
+- Phase 6 supports audited near, mid, and wider transfer. REPITITION starts with ten original-problem-first questions, then remains active with interleaved retrieval until the learner explicitly stops.
+- Optional feedback or clarification never consumes, replaces, or grades the active question.
 
-## Specification gap
+## Conversation and rendering
 
-The repository contains the earlier operational tutor instructions and general Phase 0–6 design notes, but not the authoritative updated tutoring prompt requested by the project. Exact diagnostic coverage, prescribed training ladders, remediation thresholds, integration acceptance policy, and transfer success criteria must be reconciled against that prompt. Current provisional rules are intentionally documented rather than presented as authoritative pedagogical policy.
+The frontend persists a chronological message array containing problems, questions, learner answers/reasoning, tutor explanations, phase events, integration work, and the verified solution. Legacy sessions are migrated from the existing attempt history. The current question stays singular and separate from prior turns. KaTeX rendering uses the shared parser for questions, choices, explanations, scratchwork, and saved history. Generated visuals are restricted to the validated fixed diagram vocabulary (`none`, sequence, number line, or mapping); arbitrary HTML, SVG, and JavaScript are never executed.
 
-## Persistence and security limitations
+## Provider and auditing
 
-Session history and controller tokens use the current browser-local persistence architecture. There is no account identity, server-side durable session store, or cross-device sync. The token is encrypted and authenticated using `CONTROLLER_SECRET`; if not configured, the Worker derives a key from the Gemini key. Set a distinct random `CONTROLLER_SECRET` (at least 16 characters) in Worker secrets. Because tokens are stateless bearer credentials, an old token can be replayed to fork a prior valid state; preventing replay or concurrent forks requires durable server storage, which is outside the current anonymous architecture. Anyone with browser access can read or alter local transcripts/drafts, though changing a token does not change the server-validated progression state.
+Gemini remains the only provider and the configured model default remains `gemini-3.5-flash-lite`. Generation schemas constrain controller-relevant fields but tutor prose remains free-form inside explanation/feedback fields. Every generated diagnostic, training, integration, retrieval, solution, and transfer artifact is validated before state advancement. Malformed output, ambiguity, audit rejection, timeout, and rate limiting return an error without issuing an advanced token.
 
-## Verification
+Tutor responses expose generation, audit, and total request time. Learning actions expose total request time. Retrieval feedback and next-question generation run concurrently, followed by the question audit. These measurements are observability data, not claims about live-provider speed; the automated tests use a mock endpoint.
 
-Tests use a mocked Gemini endpoint and do not establish live Gemini mathematical reliability. Real-provider checks still need to verify structured output/schema compatibility, rate limits, timeout behavior, mathematical quality of generated maps/questions/evaluations/solutions/transfers, and the updated tutoring prompt. Keep all provider credentials in Worker secrets; never place them in frontend configuration.
+## Persistence and security limits
+
+The application remains anonymous and browser-local. There is no account identity, durable server session, or cross-device synchronization. `CONTROLLER_SECRET` should be an independent Worker secret of at least 16 characters. Tokens are encrypted and authenticated, bound to course/session IDs, and keep answer keys out of browser-visible question objects. Because the architecture is stateless, any previously issued valid token can be replayed to fork an earlier state. Durable anti-replay and concurrency control require server-side storage and are not implemented. Local transcripts, drafts, images, notes, and scratchwork are readable to anyone with access to the browser profile.
+
+## Validation scope
+
+`npm test` runs mock-provider workflows covering all seven phases for representative Real Analysis, Information Theory, and numerical optimization fixtures; diagnostic minimum and continuation; A–F handling; verification; ladders; course isolation; ordered integration; unlock rejection; transfer; continuing REPITITION; persistence/migration; token tampering; provider failure; and LaTeX parsing. Mock fixtures verify orchestration and invariants, not live Gemini mathematical quality. Live-provider correctness, latency, OCR quality, and rate-limit behavior still require a separately configured preview Worker and are intentionally not claimed here.

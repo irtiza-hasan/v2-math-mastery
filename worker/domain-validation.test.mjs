@@ -35,9 +35,11 @@ for (const fixture of cases) {
   assert.ok(fixture.modules.every((module, index) => module.dependsOn.every(id => fixture.modules.slice(0, index).some(parent => parent.id === id))), `${fixture.name}: prerequisite dependencies must be acyclic and ordered`);
   let state = createLearningState({ courseId: fixture.name, sessionId: 'validation', problem: fixture.problem, prerequisites: fixture.modules, initialQuestion: fixture.question, questionId: 'q0' });
   for (let i=0;i<10;i++) state=transition(state,{type:'diagnostic-answer',questionId:state.active.id,choice:'A',correct:true,reasoningSound:true,objective:fixture.question.assessmentType,nextQuestion:{id:`q${i+1}`,question:fixture.question}});
-  state=transition(state,{type:'integration-plan',steps:fixture.steps});
-  assert.throws(()=>transition(state,{type:'integration-step',stepId:fixture.steps[1].id,verified:true}),/validated order/);
-  for (const step of fixture.steps) state=transition(state,{type:'integration-step',stepId:step.id,verified:true});
+  state=transition(state,{type:'finish-diagnosis'});
+  const integrationSteps=fixture.steps.map(step=>({...step,question:{...fixture.question,prompt:step.prompt}}));
+  state=transition(state,{type:'integration-plan',steps:integrationSteps});
+  assert.throws(()=>transition(state,{type:'integration-answer',stepId:fixture.steps[1].id,correct:true,reasoningSound:true}),/Only the active/);
+  for (const step of fixture.steps) state=transition(state,{type:'integration-answer',stepId:step.id,correct:true,reasoningSound:true});
   state=transition(state,{type:'complete-integration',solutionSteps:[{math:fixture.problem,explanation:'Fixture solution independently reviewed in the test specification.'}]});
   state=transition(state,{type:'transfer-generated',distance:'near',prompt:`A related ${fixture.name} exercise.`});
   state=transition(state,{type:'transfer-evaluated',distance:'near',correct:true,feedback:'The essential reasoning is present.'});

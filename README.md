@@ -14,7 +14,7 @@ Node 22 is required for the test suite. Set `VITE_API_URL` to your Worker URL; t
 
 Create a course, start a mathematical problem, and return through Saved sessions. Progress is automatically saved **only in this browser**. Export a JSON backup from the header. There is no account, cloud synchronization, or automatic syllabus extraction. Storage failures are shown explicitly.
 
-The supplied [design brief](docs/DESIGN_BRIEF.md), [architecture / feature-status guide](docs/FRONTEND_ARCHITECTURE.md), and [tutoring engine specification and limitations](docs/TUTORING_ENGINE.md) explain the data model, Worker state controller, API actions, persistence boundaries, and current test coverage.
+The supplied [design brief](docs/DESIGN_BRIEF.md), [architecture guide](docs/FRONTEND_ARCHITECTURE.md), [tutoring engine guide](docs/TUTORING_ENGINE.md), and [V2 compliance matrix](docs/V2_COMPLIANCE.md) explain the data model, Worker state controller, API actions, persistence boundaries, current coverage, and known limits.
 
 GitHub Pages still deploys only from `main`. Review this redesign on its feature branch before merging. Worker changes must be deployed separately after review; no production deployment is performed by this change.
 
