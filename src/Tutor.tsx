@@ -25,7 +25,9 @@ const closeAction=(thread:ConversationMessage[],key:ConversationMessage['actionK
 function migratedMessages(state:LearnerState):ConversationMessage[]{
   if(state.messages?.length){
     const messages=[...state.messages];
-    if(state.currentQuestion?.questionId&&!messages.some(message=>message.question?.questionId===state.currentQuestion?.questionId))messages.push({id:`active-${state.currentQuestion.questionId}`,role:'tutor',kind:'question',question:state.currentQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:state.currentQuestion.questionId,createdAt:messages.at(-1)?.createdAt||Date.now()});
+    const activeQuestion=state.currentQuestion;
+    const represented=activeQuestion&&messages.some(message=>message.active&&message.kind==='question'&&(activeQuestion.questionId?message.question?.questionId===activeQuestion.questionId:message.question?.prompt===activeQuestion.prompt));
+    if(activeQuestion&&!represented)messages.push({id:`active-${activeQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:activeQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:activeQuestion.questionId||'legacy-current-question',createdAt:(messages.at(-1)?.createdAt||Date.now())+1});
     return messages.sort((a,b)=>a.createdAt-b.createdAt);
   }
   const messages:ConversationMessage[]=[];
@@ -36,7 +38,7 @@ function migratedMessages(state:LearnerState):ConversationMessage[]{
     messages.push({id:`migrated-evaluation-${item.time}-${index}`,role:'tutor',kind:'explanation',verdict:item.isCorrect,blocks:[item.feedback&&{type:'paragraph',text:item.feedback},item.explanation&&{type:'derivation',text:item.explanation}].filter(Boolean) as ContentBlock[],createdAt:item.time});
   }
   if(state.modules?.length)messages.push({id:'migrated-prerequisites',role:'tutor',kind:'explanation',blocks:[{type:'paragraph',text:`Prerequisites identified: ${state.modules.map(module=>module.title).join(' → ')}.`}],phase:1,createdAt:1});
-  if(state.currentQuestion?.questionId)messages.push({id:`active-${state.currentQuestion.questionId}`,role:'tutor',kind:'question',question:state.currentQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:state.currentQuestion.questionId,createdAt:messages.at(-1)?.createdAt||Date.now()});
+  if(state.currentQuestion)messages.push({id:`active-${state.currentQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:state.currentQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:state.currentQuestion.questionId||'legacy-current-question',createdAt:(messages.at(-1)?.createdAt||Date.now())+1});
   return messages.sort((a,b)=>a.createdAt-b.createdAt);
 }
 function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }

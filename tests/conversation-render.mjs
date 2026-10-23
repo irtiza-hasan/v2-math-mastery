@@ -77,7 +77,18 @@ try {
   assert(html.includes('REPITITION started') && html.includes('Stop REPITITION'), 'retrieval and stop control appear in the same thread');
   const standalone = renderToStaticMarkup(React.createElement(ThreadMessage, { message: messages.find(message => message.kind === 'question' && message.active), activeContent: React.createElement('div', { className: 'questionBubble' }, React.createElement(MathText, { text: '$x_n\\to x$' })) }));
   assert(standalone.includes('katex'), 'active question mathematics uses the same renderer');
-  console.log('PASS: single chronological Phase 0–6 workspace render, one active question, no duplicate problem/solution panels, and KaTeX in historical and active messages');
+  const legacySession = newSession(course.id);
+  legacySession.learner = {
+    theorem: 'Legacy saved theorem.', controllerToken: 'mock-token', stage: 'diagnostic', diagnosticsCount: 0,
+    messages: [{ id: 'legacy-problem', role: 'student', kind: 'problem', text: 'Legacy saved theorem.', createdAt: 1 }],
+    currentQuestion: { prompt: 'Legacy active question $x_n\\to x$?', options: ['$1$', '$2$', '$3$', '$4$', '$5$'] },
+  };
+  const legacyHtml = renderToStaticMarkup(React.createElement(LearningWorkspace, {
+    session: legacySession, store: { ...store, sessions: [legacySession] }, patch: () => {}, saveLearner: () => {},
+  }));
+  assert(legacyHtml.includes('Legacy active question'), 'pre-timeline sessions migrate their active question into the conversation');
+  assert.equal((legacyHtml.match(/questionBubble/g) || []).length, 1, 'legacy migration does not duplicate the active question');
+  console.log('PASS: single chronological Phase 0–6 workspace render, one active question, no duplicate problem/solution panels, KaTeX in historical/active messages, and legacy active-question migration');
 } finally {
   await server.close();
 }
