@@ -1,0 +1,29 @@
+import React, { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { Tutor, MathText, type LearnerState } from '../Tutor';
+import { phases, skillState, type LearningSession, type LearningStore } from '../models';
+import { PrerequisiteGraph } from './PrerequisiteGraph';
+import { moduleProgress } from '../learning';
+import { readAttachment } from '../repository';
+export function LearningWorkspace({ session, store, patch, saveLearner }: { session: LearningSession; store: LearningStore; patch: (patch:Partial<LearningSession>)=>void; saveLearner:(state:LearnerState)=>void }) {
+ const [panel,setPanel]=useState<'problem'|'map'|'skills'|'notes'|'work'|''>(''),[fileError,setFileError]=useState('');
+ const history=session.learner.history||[], modules=session.learner.modules||[];
+ const prior=store.skills.filter(s=>s.courseId===session.courseId).map(skill=>{const evidence=store.evidence.filter(e=>e.skillId===skill.id&&e.sessionId!==session.id);return {skillId:skill.id,topic:skill.name,evidence,interpretation:skillState(evidence)};}).filter(p=>p.evidence.length);
+ const nodes=modules.map(m=>{const skillId=session.skillLinks[m.id],previous=store.evidence.filter(e=>e.skillId===skillId&&e.sessionId!==session.id),p=moduleProgress(m,history);return {...m,status:p.status==='unassessed'?'Not assessed':p.ready?'Strong evidence':'Developing',prior:skillState(previous).summary,diagnostic:`${history.filter(h=>h.question.moduleId===m.id&&h.stage==='diagnostic').length} diagnostic responses in this session. ${p.label}.`,remediation:`${history.filter(h=>h.question.moduleId===m.id&&h.stage==='learning').length} topic practice responses.`};});
+ const phase=session.phase;
+ const toggle=(next:typeof panel)=>setPanel(panel===next?'':next);
+ return <div className="workspace"><div className="workspaceCenter"><header className="workspaceHeading"><div><span className="phaseLabel">Phase {phase} · {phases[phase]}</span><h1>{session.learner.currentQuestion?.skill||'Mathematical problem'}</h1></div><details className="phasePath"><summary>Learning path <ChevronDown size={13}/></summary><ol>{phases.map((name,index)=><li key={name} className={index===phase?'current':''}><span>{index}</span>{name}</li>)}</ol></details></header><nav className="contextControls" aria-label="Conversation context">{([['problem','Original problem'],['map','Prerequisite map'],['skills','Course skills'],['notes','Notes'],['work','Scratchwork']] as const).map(([key,label])=><button key={key} aria-expanded={panel===key} className={panel===key?'active':''} onClick={()=>toggle(key)}>{label}</button>)}</nav>
+ {panel&&<section className="contextDrawer" aria-label={`${panel} panel`}>
+ {panel==='problem'&&<div className="originalProblem"><MathText text={session.learner.theorem||session.learner.draftProblem||'No problem entered.'}/>{session.learner.problemImage&&<img className="originalProblemImage" src={`data:${session.learner.problemImage.mimeType};base64,${session.learner.problemImage.data}`} alt="Original uploaded problem"/>}</div>}
+ {panel==='map'&&<><h2>Problem prerequisites</h2><PrerequisiteGraph nodes={nodes}/></>}
+ {panel==='skills'&&<div className="contextSkillList">{prior.filter(p=>modules.some(m=>m.title.toLowerCase()===p.topic.toLowerCase())).map(p=><p key={p.skillId}><strong>{p.topic}</strong><span>{p.interpretation.status} · {p.interpretation.summary}</span></p>)}{!prior.some(p=>modules.some(m=>m.title.toLowerCase()===p.topic.toLowerCase()))&&<p>No earlier evidence matches this problem.</p>}</div>}
+ {panel==='notes'&&<label htmlFor="session-notes">Notes<textarea id="session-notes" rows={5} placeholder="Ideas and questions" value={session.notes} onChange={e=>patch({notes:e.target.value})}/></label>}
+ {panel==='work'&&<><Scratchpad title="Scratchwork" text={session.scratchpad} onChange={scratchpad=>patch({scratchpad})}/><label className="uploadLabel">Attach work<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain" onChange={async e=>{const f=e.target.files?.[0];if(!f)return;try{const a=await readAttachment(f);patch({attachments:[...session.attachments,a]});setFileError('');}catch(e){setFileError((e as Error).message);}}}/></label>{fileError&&<p role="alert">{fileError}</p>}{session.attachments.map((a,i)=><div className="attachmentRow" key={i}><a href={a.dataUrl} download={a.name}>{a.name}</a><button className="textButton" onClick={()=>patch({attachments:session.attachments.filter((_,j)=>j!==i)})}>Remove</button></div>)}</>}
+ </section>}
+ <div className="conversationColumn">
+ {/* Keep tutor mounted across tabs to preserve unsent input and in-flight requests. */}
+ <Tutor key={`${session.id}-${session.learner.mode === 'repetition' ? 'retrieval' : 'guided'}`} initial={session.learner} onSave={saveLearner} priorEvidence={prior} phase={phase} onPhase={phase=>patch({phase})} sessionId={session.id} courseId={session.courseId}/>
+ </div></div>
+ </div>;
+}
+function Scratchpad({title,text,onChange}:{title:string;text:string;onChange:(text:string)=>void}) {return <div className="scratchpad"><label>{title}<textarea rows={7} value={text} onChange={e=>onChange(e.target.value)} placeholder="Write your mathematical reasoning. Use $...$ for inline LaTeX and $$...$$ for display mathematics."/></label>{text&&<div className="mathPreview"><span className="tinyLabel">Preview</span><div><MathText text={text}/></div></div>}</div>;}

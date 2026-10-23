@@ -1,28 +1,21 @@
-# Math Mastery Study Space
+# LLM-TA for Math Learning
 
-A browser-based mathematics practice site with a React, TypeScript, Vite, and KaTeX frontend; a Cloudflare Worker connects questions to Gemini. Learner progress is stored locally in the browser. There are no accounts.
+A course-based mathematics learning workspace built with React, TypeScript, Vite, KaTeX, and a Cloudflare Worker. Adaptive diagnosis and targeted practice support numerical, symbolic, and proof-based mathematics.
 
-## Local development
-
-```bash
-npm install
+```sh
+npm ci
 npm run dev
-```
-
-## Checks
-
-```bash
 npm run check
 npm test
 npm run build
 ```
 
-## Deployment
+Node 22 is required for the test suite. Set `VITE_API_URL` to your Worker URL; the existing deployed Worker remains the fallback. API credentials belong only in Worker secrets. The Worker continues to use the existing Gemini provider.
 
-GitHub Actions builds the frontend and deploys it to GitHub Pages when changes are pushed to `main`. The app uses the public Worker endpoint configured in `src/main.tsx`; set `VITE_API_URL` only if that endpoint changes.
+Create a course, start a mathematical problem, and return through Saved sessions. Progress is automatically saved **only in this browser**. Export a JSON backup from the header. There is no account, cloud synchronization, or automatic syllabus extraction. Storage failures are shown explicitly.
 
-The Worker source is in `worker/`. Deploy it with Wrangler from that directory. Keep `GEMINI_API_KEY` as a Cloudflare Worker secret and never add it to frontend files or GitHub. Configure `ALLOWED_ORIGIN` to the exact GitHub Pages origin.
+The supplied [design brief](docs/DESIGN_BRIEF.md), [architecture guide](docs/FRONTEND_ARCHITECTURE.md), [tutoring engine guide](docs/TUTORING_ENGINE.md), and [V2 compliance matrix](docs/V2_COMPLIANCE.md) explain the data model, Worker state controller, API actions, persistence boundaries, current coverage, and known limits.
 
-## Anonymous learner data
+GitHub Pages still deploys only from `main`. Review this redesign on its feature branch before merging. Worker changes must be deployed separately after review; no production deployment is performed by this change.
 
-Each browser creates an anonymous local learner profile. The **New learner** control creates another isolated profile on that device. Progress does not sync between browsers or devices.
+For isolated local UI verification, run `VITE_API_URL=/__qa npm run dev:qa` and use a dedicated QA course. This explicitly selected test server returns mock tutor responses; normal `npm run dev` and production builds retain the existing provider. `/tests/responsive.html` is a 390px development-only preview. See the architecture guide for verified behavior and remaining limits.
