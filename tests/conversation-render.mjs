@@ -78,9 +78,17 @@ try {
   const standalone = renderToStaticMarkup(React.createElement(ThreadMessage, { message: messages.find(message => message.kind === 'question' && message.active), activeContent: React.createElement('div', { className: 'questionBubble' }, React.createElement(MathText, { text: '$x_n\\to x$' })) }));
   assert(standalone.includes('katex'), 'active question mathematics uses the same renderer');
   const legacySession = newSession(course.id);
+  const legacyIntegrationQuestion = { questionId: 'legacy-step-1', prompt: 'Legacy integration step?', options: ['$1$', '$2$', '$3$', '$4$', '$5$'], correctAnswer: 'A' };
+  legacySession.phase = 6;
   legacySession.learner = {
-    theorem: 'Legacy saved theorem.', controllerToken: 'mock-token', stage: 'diagnostic', diagnosticsCount: 0,
+    theorem: 'Legacy saved theorem.', controllerToken: 'mock-token', stage: 'repetition', mode: 'repetition', diagnosticsCount: 0,
     messages: [{ id: 'legacy-problem', role: 'student', kind: 'problem', text: 'Legacy saved theorem.', createdAt: 1 }],
+    modules: [{ id: 'legacy-skill', title: 'Metric convergence', purpose: 'Use metric distance.' }],
+    integrationPlan: [{ id: 'legacy-step-1', concept: 'Use the metric definition.', question: legacyIntegrationQuestion }],
+    integrationAccepted: ['legacy-step-1'], integrationWork: { 'legacy-step-1': 'The metric distance is below epsilon.', 'transfer-near': 'Apply the same bound.' },
+    integrationFeedback: { 'legacy-step-1': 'This step is justified.' }, solutionUnlocked: true,
+    verifiedSolution: { steps: [{ math: '$$d(x_n,x)<\\varepsilon$$', explanation: 'Choose the convergence threshold.' }] },
+    transferExercises: { near: 'Legacy transfer exercise.' }, transferFeedback: { near: 'The argument transfers.' },
     currentQuestion: { prompt: 'Legacy active question $x_n\\to x$?', options: ['$1$', '$2$', '$3$', '$4$', '$5$'] },
   };
   const legacyHtml = renderToStaticMarkup(React.createElement(LearningWorkspace, {
@@ -88,7 +96,11 @@ try {
   }));
   assert(legacyHtml.includes('Legacy active question'), 'pre-timeline sessions migrate their active question into the conversation');
   assert.equal((legacyHtml.match(/questionBubble/g) || []).length, 1, 'legacy migration does not duplicate the active question');
-  console.log('PASS: single chronological Phase 0–6 workspace render, one active question, no duplicate problem/solution panels, KaTeX in historical/active messages, and legacy active-question migration');
+  assert(legacyHtml.includes('Legacy integration step') && legacyHtml.includes('The metric distance is below epsilon.'), 'legacy integration questions and responses are restored');
+  assert(legacyHtml.includes('Legacy transfer exercise.') && legacyHtml.includes('Apply the same bound.'), 'legacy transfer work and exercises are restored');
+  assert(legacyHtml.includes('Choose the convergence threshold.'), 'legacy verified solutions are restored in the transcript');
+  assert(!legacyHtml.includes('correctAnswer'), 'legacy migration never reveals saved answer keys');
+  console.log('PASS: single chronological Phase 0–6 workspace render, one active question, no duplicate problem/solution panels, KaTeX in historical/active messages, and legacy phase-content migration without answer-key exposure');
 } finally {
   await server.close();
 }

@@ -22,24 +22,67 @@ export function MathText({ text = '' }: { text?: string }) {
 function cleanTutorText(value = '') { return String(value).replace(/\b(?:Proofwise|Math Mastery)\b/gi, 'LLM-TA for Math Learning').replace(/\bV2\b/gi, ''); }
 const messageId=()=>globalThis.crypto?.randomUUID?.()||`message-${Date.now()}-${Math.random()}`;
 const closeAction=(thread:ConversationMessage[],key:ConversationMessage['actionKey'])=>thread.map(message=>message.kind==='action'&&message.actionKey===key&&message.active?{...message,active:false}:message);
+const visibleQuestion=(question:Question):Question=>{const {correctAnswer:_hidden,...visible}=question;return visible;};
+function migrateSavedActivities(messages:ConversationMessage[],state:LearnerState):ConversationMessage[]{
+  const thread=[...messages];let time=Math.max(0,...thread.map(message=>message.createdAt||0))+1;
+  const add=(message:Omit<ConversationMessage,'createdAt'|'id'>&{id?:string;createdAt?:number})=>{
+    const id=message.id||`migrated-${message.kind}-${message.phase??'x'}-${thread.length}`;
+    if(thread.some(existing=>existing.id===id))return;
+    thread.push({...message,id,createdAt:message.createdAt??time++} as ConversationMessage);
+  };
+  if(state.modules?.length&&!thread.some(message=>message.phase===1)){
+    const orientation=thread.find(message=>message.phase===0),problem=thread.find(message=>message.kind==='problem');
+    add({role:'tutor',kind:'explanation',phase:1,blocks:[{type:'paragraph',text:`Prerequisites identified: ${state.modules.map(module=>module.title).join(', ')}.`}],createdAt:orientation?.createdAt!==undefined?orientation.createdAt+.5:problem?.createdAt!==undefined?problem.createdAt+.5:time});
+  }
+  const integrationIds=new Set((state.integrationPlan||[]).map(step=>step.id));
+  for(const message of thread){
+    if(message.kind==='question'&&message.question&&integrationIds.has(message.question.questionId||''))message.activity='integration';
+  }
+  for(const step of state.integrationPlan||[]){
+    const questionId=step.question.questionId||step.id;
+    if(thread.some(message=>message.kind==='question'&&(message.question?.questionId===questionId||message.question?.questionId===step.id)))continue;
+    add({role:'tutor',kind:'question',activity:'integration',activityId:step.id,question:visibleQuestion({...step.question,questionId}),phase:4});
+    const work=state.integrationWork?.[step.id],feedback=state.integrationFeedback?.[step.id];
+    if(work)add({role:'student',kind:'answer',text:work,phase:4});
+    if(feedback)add({role:'tutor',kind:'explanation',phase:4,blocks:[{type:'paragraph',text:feedback}]});
+  }
+  if(state.solutionUnlocked&&state.verifiedSolution?.steps?.length&&!thread.some(message=>message.phase===5&&message.kind==='explanation')){
+    add({role:'system',kind:'phase',phase:5,text:'Verified solution unlocked.'});
+    const blocks:ContentBlock[]=state.verifiedSolution.steps.flatMap(step=>[{type:'derivation' as const,text:step.math},{type:'paragraph' as const,text:step.explanation}]);
+    if(state.verifiedSolution.commonMistakes?.length)blocks.push({type:'paragraph',text:`Common points to check: ${state.verifiedSolution.commonMistakes.join('; ')}`});
+    if(state.verifiedSolution.interpretations?.length)blocks.push({type:'paragraph',text:state.verifiedSolution.interpretations.join('\n')});
+    add({role:'tutor',kind:'explanation',phase:5,blocks});
+  }
+  for(const distance of ['near','mid','wider'] as const){
+    const exercise=state.transferExercises?.[distance];
+    if(!exercise||thread.some(message=>message.kind==='transfer'&&message.distance===distance))continue;
+    add({role:'tutor',kind:'transfer',activity:'transfer',activityId:distance,distance,text:exercise,phase:6});
+    const work=state.transferDrafts?.[distance]||state.integrationWork?.[`transfer-${distance}`];
+    if(work)add({role:'student',kind:'answer',text:work,phase:6});
+    const feedback=state.transferFeedback?.[distance];
+    if(feedback)add({role:'tutor',kind:'explanation',phase:6,blocks:[{type:'paragraph',text:feedback}]});
+  }
+  return thread.sort((a,b)=>a.createdAt-b.createdAt);
+}
 function migratedMessages(state:LearnerState):ConversationMessage[]{
   if(state.messages?.length){
-    const messages=[...state.messages];
+    const messages=migrateSavedActivities(state.messages,state);
     const activeQuestion=state.currentQuestion;
     const represented=activeQuestion&&messages.some(message=>message.active&&message.kind==='question'&&(activeQuestion.questionId?message.question?.questionId===activeQuestion.questionId:message.question?.prompt===activeQuestion.prompt));
-    if(activeQuestion&&!represented)messages.push({id:`active-${activeQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:activeQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:activeQuestion.questionId||'legacy-current-question',createdAt:(messages.at(-1)?.createdAt||Date.now())+1});
+    if(activeQuestion&&!represented)messages.push({id:`active-${activeQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:visibleQuestion(activeQuestion),active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:activeQuestion.questionId||'legacy-current-question',createdAt:(messages.at(-1)?.createdAt||Date.now())+1});
     return messages.sort((a,b)=>a.createdAt-b.createdAt);
   }
   const messages:ConversationMessage[]=[];
   if(state.theorem)messages.push({id:messageId(),role:'student',kind:'problem',text:state.theorem,createdAt:0});
   for(const [index,item] of (state.history||[]).entries()){
-    messages.push({id:`migrated-question-${item.time}-${index}`,role:'tutor',kind:'question',question:item.question,createdAt:item.time-2});
+    messages.push({id:`migrated-question-${item.time}-${index}`,role:'tutor',kind:'question',question:visibleQuestion(item.question),activity:item.stage==='repetition'?'retrieval':undefined,createdAt:item.time-2});
     messages.push({id:`migrated-answer-${item.time}-${index}`,role:'student',kind:'answer',choice:item.choice,reasoning:item.reasoning,text:item.choice==='F'?"I don't know yet":item.question.options['ABCDE'.indexOf(item.choice)]||item.choice,createdAt:item.time-1});
     messages.push({id:`migrated-evaluation-${item.time}-${index}`,role:'tutor',kind:'explanation',verdict:item.isCorrect,blocks:[item.feedback&&{type:'paragraph',text:item.feedback},item.explanation&&{type:'derivation',text:item.explanation}].filter(Boolean) as ContentBlock[],createdAt:item.time});
   }
-  if(state.modules?.length)messages.push({id:'migrated-prerequisites',role:'tutor',kind:'explanation',blocks:[{type:'paragraph',text:`Prerequisites identified: ${state.modules.map(module=>module.title).join(' → ')}.`}],phase:1,createdAt:1});
-  if(state.currentQuestion)messages.push({id:`active-${state.currentQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:state.currentQuestion,active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:state.currentQuestion.questionId||'legacy-current-question',createdAt:(messages.at(-1)?.createdAt||Date.now())+1});
-  return messages.sort((a,b)=>a.createdAt-b.createdAt);
+  if(state.modules?.length)messages.push({id:'migrated-prerequisites',role:'tutor',kind:'explanation',blocks:[{type:'paragraph',text:`Prerequisites identified: ${state.modules.map(module=>module.title).join(', ')}.`}],phase:1,createdAt:1});
+  const migrated=migrateSavedActivities(messages,state);
+  if(state.currentQuestion)migrated.push({id:`active-${state.currentQuestion.questionId||'legacy-current-question'}`,role:'tutor',kind:'question',question:visibleQuestion(state.currentQuestion),active:true,activity:state.mode==='repetition'?'retrieval':state.stage==='integration'?'integration':'guided',activityId:state.currentQuestion.questionId||'legacy-current-question',createdAt:(migrated.at(-1)?.createdAt||Date.now())+1});
+  return migrated.sort((a,b)=>a.createdAt-b.createdAt);
 }
 function stepFor(phase = '') { const n = Number(phase.match(/step\s*(\d)/i)?.[1]); return n >= 1 && n <= 3 ? n : /repetition/i.test(phase) ? 0 : 1; }
 function correctStreak(history: Attempt[]) { let count = 0; for (let i = history.length - 1; i >= 0 && history[i].isCorrect === true; i--) count++; return count; }
